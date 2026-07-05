@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from separator import SAMPLE_RATE, engine
+from transcriber import export_dialogue, transcriber
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(os.path.dirname(BASE_DIR), "output")
@@ -149,7 +150,7 @@ def get_job(job_id: str):
         if job is None:
             raise HTTPException(404, "job not found")
         job = dict(job)
-    if job["status"] == "done":
+    if job["status"] == "done" and job.get("kind") != "dialogue":
         job["stems"] = [
             {**spec, "url": f"/api/jobs/{job_id}/audio/{spec['name']}.wav"}
             for spec in STEM_SPECS[job["mode"]]
@@ -185,6 +186,99 @@ def download_zip(job_id: str):
                 if os.path.isfile(src):
                     zf.write(src, f"{base}_{spec['label']}.wav")
     return FileResponse(zip_path, media_type="application/zip", filename="stems.zip")
+
+
+def process_dialogue_job(job_id: str, wav_path: str, opts: dict):
+    job_dir = os.path.join(OUTPUT_DIR, job_id)
+    try:
+        audio, sr = sf.read(wav_path, dtype="float32", always_2d=True)
+
+        def cb(pct, msg):
+            set_job(job_id, progress=pct, message=msg)
+
+        segments, lang = transcriber.transcribe(
+            audio, sr,
+            model_size=opts["model_size"],
+            language=opts["language"] or None,
+            progress_cb=cb,
+        )
+        if not segments:
+            raise RuntimeError("セリフを検出できませんでした (対象トラックに音声が含まれているか確認してください)")
+
+        set_job(job_id, progress=85, message="クリップ・字幕・メタデータを書き出し中...")
+        out_dir = os.path.join(job_dir, "dialogue")
+        _, annotations = export_dialogue(
+            audio, sr, segments, out_dir,
+            base_name=opts["base_name"],
+            make_clips=opts["make_clips"],
+            make_srt=opts["make_srt"],
+            make_tts=opts["make_tts"],
+            mono_clips=opts["mono_clips"],
+        )
+        set_job(
+            job_id,
+            status="done",
+            progress=100,
+            message="完了",
+            segments=annotations,
+            language=lang,
+            zip_url=f"/api/jobs/{job_id}/dialogue.zip",
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        set_job(job_id, status="error", message=str(e))
+
+
+@app.post("/api/dialogue-export")
+async def dialogue_export_api(
+    file: UploadFile = File(...),
+    model_size: str = Form("medium"),
+    language: str = Form(""),
+    base_name: str = Form("dialogue"),
+    make_clips: bool = Form(True),
+    make_srt: bool = Form(True),
+    make_tts: bool = Form(True),
+    mono_clips: bool = Form(True),
+):
+    job_id = uuid.uuid4().hex[:12]
+    job_dir = os.path.join(OUTPUT_DIR, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    wav_path = os.path.join(job_dir, "dialogue_input.wav")
+    with open(wav_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    # ファイル名に使えない文字を除去
+    safe_base = "".join(c for c in base_name if c not in '\\/:*?"<>|').strip() or "dialogue"
+
+    with jobs_lock:
+        jobs[job_id] = {
+            "id": job_id,
+            "kind": "dialogue",
+            "status": "processing",
+            "progress": 0,
+            "message": "準備中...",
+            "created": time.time(),
+        }
+    opts = {
+        "model_size": model_size,
+        "language": language,
+        "base_name": safe_base,
+        "make_clips": make_clips,
+        "make_srt": make_srt,
+        "make_tts": make_tts,
+        "mono_clips": mono_clips,
+    }
+    threading.Thread(target=process_dialogue_job, args=(job_id, wav_path, opts), daemon=True).start()
+    return {"id": job_id}
+
+
+@app.get("/api/jobs/{job_id}/dialogue.zip")
+def download_dialogue_zip(job_id: str):
+    path = os.path.join(OUTPUT_DIR, job_id, "dialogue", "dialogue_export.zip")
+    if not os.path.isfile(path):
+        raise HTTPException(404)
+    return FileResponse(path, media_type="application/zip", filename="dialogue_export.zip")
 
 
 @app.post("/api/denoise")

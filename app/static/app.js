@@ -1147,6 +1147,95 @@ async function applyRepair() {
   }
 }
 
+// ---------- セリフ書き出し ----------
+let dialogueBusy = false;
+
+function openDialoguePanel() {
+  // 対象トラックの選択肢を構築 (話し声/ボーカルがあれば初期選択)
+  const sel = $("dg-track");
+  sel.innerHTML = "";
+  tracks.forEach((t, i) => {
+    if (t.isOriginal) return;
+    const opt = document.createElement("option");
+    opt.value = i;
+    opt.textContent = t.label;
+    sel.appendChild(opt);
+  });
+  const preferred = tracks.findIndex((t) => t.name === "dialog" || t.name === "vocals");
+  if (preferred >= 0) sel.value = preferred;
+  togglePanel("panel-dialogue");
+}
+
+async function runDialogueExport() {
+  if (dialogueBusy) return;
+  const trackIdx = parseInt($("dg-track").value, 10);
+  const track = tracks[trackIdx];
+  if (!track) { showError("対象トラックを選択してください"); return; }
+
+  dialogueBusy = true;
+  $("dg-run").disabled = true;
+  $("dg-result").classList.add("hidden");
+  try {
+    flashInfo(`${track.label} をアップロード中...`);
+    const form = new FormData();
+    form.append("file", new Blob([encodeWav(track.chans, sampleRate)], { type: "audio/wav" }), "track.wav");
+    form.append("model_size", $("dg-model").value);
+    form.append("language", $("dg-lang").value);
+    form.append("base_name", baseFilename);
+    form.append("make_clips", $("dg-clips").checked);
+    form.append("make_srt", $("dg-srt").checked);
+    form.append("make_tts", $("dg-tts").checked);
+    form.append("mono_clips", $("dg-mono").checked);
+
+    const res = await fetch("/api/dialogue-export", { method: "POST", body: form });
+    if (!res.ok) throw new Error("ジョブの開始に失敗しました (" + res.status + ")");
+    const { id } = await res.json();
+
+    // ポーリング
+    let job;
+    while (true) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const jr = await fetch("/api/jobs/" + id);
+      if (!jr.ok) throw new Error("ジョブ情報の取得に失敗しました");
+      job = await jr.json();
+      if (job.status === "error") throw new Error(job.message);
+      if (job.status === "done") break;
+      flashInfo(`セリフ書き出し: ${job.message || ""}`);
+    }
+    showDialogueResult(job, trackIdx);
+    flashInfo(`セリフ書き出しが完了しました (${job.segments.length}件検出 / 言語: ${job.language})`);
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    dialogueBusy = false;
+    $("dg-run").disabled = false;
+  }
+}
+
+function showDialogueResult(job, trackIdx) {
+  $("dg-zip").href = job.zip_url;
+  $("dg-summary").textContent = `${job.segments.length}件のセリフを検出 (言語: ${job.language})。行をクリックするとその位置にジャンプします`;
+  const list = $("dg-segments");
+  list.innerHTML = "";
+  job.segments.forEach((seg) => {
+    const row = document.createElement("div");
+    row.className = "dg-seg";
+    row.innerHTML = `<span class="dg-idx">${String(seg.index).padStart(3, "0")}</span>` +
+      `<span class="dg-time">${fmtTime(seg.start)}〜${fmtTime(seg.end)}</span>` +
+      `<span class="dg-text"></span>`;
+    row.querySelector(".dg-text").textContent = seg.text;
+    row.addEventListener("click", () => {
+      selection = { start: seg.start, end: seg.end };
+      setActiveTrack(trackIdx);
+      renderSelection();
+      updateToolbar();
+      seek(seg.start);
+    });
+    list.appendChild(row);
+  });
+  $("dg-result").classList.remove("hidden");
+}
+
 // ============================================================
 // ツールバー
 // ============================================================
@@ -1252,7 +1341,7 @@ $("overview").addEventListener("mousedown", (e) => {
 });
 
 function togglePanel(id) {
-  ["panel-silence-cut", "panel-denoise", "panel-repair"].forEach((p) => {
+  ["panel-silence-cut", "panel-denoise", "panel-repair", "panel-dialogue"].forEach((p) => {
     if (p === id) $(p).classList.toggle("hidden");
     else $(p).classList.add("hidden");
   });
@@ -1260,6 +1349,8 @@ function togglePanel(id) {
 $("tool-silence-cut").addEventListener("click", () => togglePanel("panel-silence-cut"));
 $("tool-denoise").addEventListener("click", () => togglePanel("panel-denoise"));
 $("tool-repair").addEventListener("click", () => togglePanel("panel-repair"));
+$("tool-dialogue").addEventListener("click", openDialoguePanel);
+$("dg-run").addEventListener("click", runDialogueExport);
 $("tool-addtrack").addEventListener("click", addTrack);
 
 $("rp-effect").addEventListener("change", () => {

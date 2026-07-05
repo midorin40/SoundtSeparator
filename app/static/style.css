@@ -321,6 +321,24 @@ main { max-width: 1060px; margin: 26px auto 40px; padding: 0 20px; }
   color: var(--text); font-family: inherit; font-size: 0.9rem; font-weight: 800;
 }
 .rp-note { color: var(--text-dim); font-size: 0.78rem; margin-top: 8px; }
+#dg-segments {
+  max-height: 240px; overflow-y: auto;
+  margin-top: 10px; border-radius: 10px;
+  border: 1px solid var(--card-border);
+  background: rgba(0, 0, 0, 0.25);
+}
+.dg-seg {
+  display: flex; gap: 12px; align-items: baseline;
+  padding: 7px 12px; cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 0.85rem;
+  transition: background 0.1s;
+}
+.dg-seg:hover { background: rgba(99, 102, 241, 0.15); }
+.dg-idx { color: var(--text-dim); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.dg-time { color: var(--dialog); font-variant-numeric: tabular-nums; flex-shrink: 0; font-size: 0.78rem; }
+.dg-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .exp-chk {
   display: flex; align-items: center; gap: 2px; cursor: pointer;
   font-size: 0.85rem; opacity: 0.55; transition: opacity 0.12s;
