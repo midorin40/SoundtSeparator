@@ -95,7 +95,7 @@
       </div>
       <!-- 編集ツールバー -->
       <div class="toolbar">
-        <div class="tool-group" data-label="編集 (範囲を選択してから)">
+        <div class="tool-group tg-edit" data-label="編集 (範囲を選択してから)">
           <button id="tool-cut" class="tool-btn" title="選択したトラックから切り取る(その場は無音に)。他のトラックには影響しません (Ctrl+X)">✂ カット</button>
           <button id="tool-copy" class="tool-btn" title="選択したトラックの範囲をコピー (Ctrl+C)">⧉ コピー</button>
           <button id="tool-paste" class="tool-btn" title="クリックで選んだトラックへ、元と同じ時間位置にミックス貼り付け (Ctrl+V)">⇥ 貼り付け</button>
@@ -106,25 +106,28 @@
           <button id="tool-ripple" class="tool-btn" title="選択範囲を全トラックから削除して前後を詰める・尺が縮みます (Shift+Delete)">⌦ 詰め削除</button>
           <button id="tool-deselect" class="tool-btn" title="選択解除 (Esc)">✕</button>
         </div>
-        <div class="tool-group" data-label="修復・整音">
+        <div class="tool-group tg-repair" data-label="修復・整音">
           <button id="tool-silence-cut" class="tool-btn" title="無音区間を自動検出して削除">✁ 無音カット</button>
           <button id="tool-denoise" class="tool-btn" title="選択範囲をノイズとして学習し全体から除去">〜 ノイズ除去</button>
           <button id="tool-repair" class="tool-btn" title="選択範囲の修復・エフェクト (クリック除去 / リバーブ除去 / ハム除去 / フェード / ノーマライズ)">🔧 修復</button>
         </div>
-        <div class="tool-group" data-label="書き出し">
+        <div class="tool-group tg-export" data-label="書き出し">
           <button id="tool-dialogue" class="tool-btn" title="文字起こしして、セリフ単位の連番WAV・SRT字幕・TTS学習用データを書き出します">📝 セリフ書き出し</button>
         </div>
-        <div class="tool-group" data-label="トラック・履歴">
+        <div class="tool-group tg-track" data-label="トラック・履歴">
           <button id="tool-addtrack" class="tool-btn" title="無音の新規トラックを追加 (移動・貼り付け先として使えます)">＋ トラック</button>
           <button id="tool-undo" class="tool-btn" title="元に戻す (Ctrl+Z)">↶ 戻す</button>
           <button id="tool-redo" class="tool-btn" title="やり直し (Ctrl+Y)">↷</button>
         </div>
-        <div class="tool-group" data-label="表示">
+        <div class="tool-group tg-view" data-label="表示">
           <button id="tool-zoom-out" class="tool-btn" title="縮小 (-)  ／ 波形上で Ctrl+ホイールでもズームできます">🔍−</button>
           <button id="tool-zoom-in" class="tool-btn" title="拡大 (+) ／ 波形上で Ctrl+ホイールでもズームできます">🔍＋</button>
           <button id="tool-zoom-sel" class="tool-btn" title="選択範囲へズーム (Z)">🔍選択</button>
           <button id="tool-zoom-full" class="tool-btn" title="全体表示 (0)">全体</button>
           <button id="tool-autoscale" class="tool-btn" title="小さい音のトラックも波形が見えるよう表示だけ拡大します (実際の音量は変わりません)">📈 自動スケール</button>
+        </div>
+        <div class="tool-group tg-help" data-label="ヘルプ">
+          <button id="tool-guide" class="tool-btn" title="用途別の整音手順ガイド">📖 整音ガイド</button>
         </div>
         <span id="selection-info" class="selection-info"></span>
       </div>
@@ -139,9 +142,45 @@
           <button class="btn panel-close">閉じる</button>
         </div>
       </div>
+      <!-- 整音ガイドパネル -->
+      <div id="panel-guide" class="panel panel-help hidden">
+        <b>📖 整音ガイド — 用途別のおすすめ手順</b>
+        <div class="guide-recipes">
+          <div class="recipe">
+            <div class="recipe-title">🎬 動画のセリフをきれいにする</div>
+            <ol>
+              <li>「話し声」の <b>S</b>(ソロ) で分離結果を確認</li>
+              <li><button class="link-btn guide-open" data-panel="panel-silence-cut">✁ 無音カット</button> で間延びを削除</li>
+              <li>ノイズが乗っていれば、ノイズだけの区間を選択 → <button class="link-btn guide-open" data-panel="panel-denoise">〜 ノイズ除去</button></li>
+              <li>「プツッ」音は範囲選択 → <button class="link-btn guide-open" data-panel="panel-repair">🔧 修復</button> のクリック除去</li>
+              <li>最後に 🔧修復 → ラウドネスノーマライズ (YouTubeなら -14 LUFS)</li>
+            </ol>
+          </div>
+          <div class="recipe">
+            <div class="recipe-title">🎤 TTS / RVC の学習素材を作る</div>
+            <ol>
+              <li>映像モードで分離し「話し声」を使う (音楽ならボーカル)</li>
+              <li>範囲選択 → <button class="link-btn guide-open" data-panel="panel-repair">🔧 修復</button> のリバーブ除去で響きを取る (乾いた声が理想)</li>
+              <li>ノイズだけの区間を選択 → <button class="link-btn guide-open" data-panel="panel-denoise">〜 ノイズ除去</button></li>
+              <li><button class="link-btn guide-open" data-panel="panel-dialogue">📝 セリフ書き出し</button> で「長さを自動調整 2〜10秒」で解析</li>
+              <li>一覧で誤認識を修正して書き出し → clips/ と metadata.csv を学習に使用</li>
+            </ol>
+          </div>
+          <div class="recipe">
+            <div class="recipe-title">🎵 ボーカル抜き / BGM抜き音源を作る</div>
+            <ol>
+              <li>音楽モードで分離</li>
+              <li>要らないトラック (例: ボーカル) を <b>M</b> でミュート…ではなく、💾チェックを外す</li>
+              <li>必要なステムだけ💾チェック →「⬇ 選択ステム保存」</li>
+              <li>合わせて聴きたい場合は M/S と音量スライダでバランス確認</li>
+            </ol>
+          </div>
+        </div>
+        <div class="panel-row"><button class="btn panel-close">閉じる</button></div>
+      </div>
       <!-- セリフ書き出しパネル -->
-      <div id="panel-dialogue" class="panel hidden">
-        <b>セリフ書き出し</b> — 対象トラックをAIで文字起こしし、セリフ単位のデータを生成します（編集内容が反映されます）
+      <div id="panel-dialogue" class="panel panel-export hidden">
+        <b>セリフ書き出し</b> — ① 解析 → ② 一覧で確認・調整 → ③ 書き出し（編集内容が反映されます）
         <div class="panel-row">
           <label>対象トラック <select id="dg-track"></select></label>
           <label>精度
@@ -160,20 +199,26 @@
           </label>
         </div>
         <div class="panel-row">
-          <label><input type="checkbox" id="dg-clips" checked> 連番WAVクリップ</label>
-          <label><input type="checkbox" id="dg-mono" checked> クリップをモノラル化 (TTS向け)</label>
-          <label><input type="checkbox" id="dg-srt" checked> SRT字幕</label>
-          <label><input type="checkbox" id="dg-tts" checked> TTS用 metadata.csv</label>
-          <button id="dg-run" class="btn btn-primary">実行</button>
+          <label title="文の区切り・無音を優先しつつ、1クリップがこの範囲に収まるよう自動で結合・分割します"><input type="checkbox" id="dg-adjust" checked> 長さを自動調整</label>
+          <label>最小 <input type="number" id="dg-min" value="2.0" step="0.5" min="0.3" max="30"> 秒</label>
+          <label>最大 <input type="number" id="dg-max" value="10.0" step="0.5" min="1" max="60"> 秒</label>
+          <span class="rp-note">TTSは2〜10秒、RVCは3〜10秒程度が定番です</span>
+          <button id="dg-run" class="btn btn-primary">🔎 ① 解析</button>
           <button class="btn panel-close">閉じる</button>
         </div>
-        <p class="rp-note">出力: clips/連番WAV ／ subtitles.srt ／ metadata.csv (LJSpeech形式「ファイル名|テキスト」) ／ annotations.json・csv (開始/終了/長さ/テキスト)</p>
         <div id="dg-result" class="hidden">
           <div class="panel-row">
-            <a id="dg-zip" class="btn btn-primary" download>⬇ 書き出し結果 (ZIP)</a>
             <span id="dg-summary" class="rp-note"></span>
           </div>
           <div id="dg-segments"></div>
+          <p class="rp-note">時刻・テキストは直接編集できます ／ ▶で再生位置ジャンプ ／ ✕で除外 ／ 長さが範囲外の行は⚠色で表示</p>
+          <div class="panel-row">
+            <label><input type="checkbox" id="dg-clips" checked> 連番WAVクリップ</label>
+            <label><input type="checkbox" id="dg-mono" checked> モノラル化 (TTS/RVC向け)</label>
+            <label><input type="checkbox" id="dg-srt" checked> SRT字幕</label>
+            <label><input type="checkbox" id="dg-tts" checked> TTS用 metadata.csv</label>
+            <button id="dg-export" class="btn btn-primary">⬇ ② 書き出し (ZIP)</button>
+          </div>
         </div>
       </div>
       <!-- 修復・エフェクトパネル -->

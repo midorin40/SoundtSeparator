@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from separator import SAMPLE_RATE, engine
-from transcriber import export_dialogue, transcriber
+from transcriber import export_dialogue, segment_words, transcriber
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(os.path.dirname(BASE_DIR), "output")
@@ -196,34 +196,43 @@ def process_dialogue_job(job_id: str, wav_path: str, opts: dict):
         def cb(pct, msg):
             set_job(job_id, progress=pct, message=msg)
 
-        segments, lang = transcriber.transcribe(
-            audio, sr,
-            model_size=opts["model_size"],
-            language=opts["language"] or None,
-            progress_cb=cb,
-        )
-        if not segments:
-            raise RuntimeError("セリフを検出できませんでした (対象トラックに音声が含まれているか確認してください)")
-
-        set_job(job_id, progress=85, message="クリップ・字幕・メタデータを書き出し中...")
-        out_dir = os.path.join(job_dir, "dialogue")
-        _, annotations = export_dialogue(
-            audio, sr, segments, out_dir,
-            base_name=opts["base_name"],
-            make_clips=opts["make_clips"],
-            make_srt=opts["make_srt"],
-            make_tts=opts["make_tts"],
-            mono_clips=opts["mono_clips"],
-        )
-        set_job(
-            job_id,
-            status="done",
-            progress=100,
-            message="完了",
-            segments=annotations,
-            language=lang,
-            zip_url=f"/api/jobs/{job_id}/dialogue.zip",
-        )
+        if opts["action"] == "analyze":
+            # 文字起こし + 長さ調整 → セグメント一覧を返す (ファイルは作らない)
+            segments, words, lang = transcriber.transcribe(
+                audio, sr,
+                model_size=opts["model_size"],
+                language=opts["language"] or None,
+                progress_cb=cb,
+            )
+            if opts["auto_adjust"] and words:
+                segments = segment_words(words, min_len=opts["min_len"], max_len=opts["max_len"])
+            if not segments:
+                raise RuntimeError("セリフを検出できませんでした (対象トラックに音声が含まれているか確認してください)")
+            annotated = [
+                {"index": i, "start": s["start"], "end": s["end"],
+                 "duration": round(s["end"] - s["start"], 3), "text": s["text"]}
+                for i, s in enumerate(segments, start=1)
+            ]
+            set_job(job_id, status="done", progress=100, message="完了",
+                    segments=annotated, language=lang)
+        else:
+            # 確認・調整済みのセグメントでファイル書き出し
+            segments = opts["segments"]
+            if not segments:
+                raise RuntimeError("書き出すセリフがありません")
+            set_job(job_id, progress=50, message="クリップ・字幕・メタデータを書き出し中...")
+            out_dir = os.path.join(job_dir, "dialogue")
+            _, annotations = export_dialogue(
+                audio, sr, segments, out_dir,
+                base_name=opts["base_name"],
+                make_clips=opts["make_clips"],
+                make_srt=opts["make_srt"],
+                make_tts=opts["make_tts"],
+                mono_clips=opts["mono_clips"],
+            )
+            set_job(job_id, status="done", progress=100, message="完了",
+                    segments=annotations,
+                    zip_url=f"/api/jobs/{job_id}/dialogue.zip")
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -233,6 +242,7 @@ def process_dialogue_job(job_id: str, wav_path: str, opts: dict):
 @app.post("/api/dialogue-export")
 async def dialogue_export_api(
     file: UploadFile = File(...),
+    action: str = Form("analyze"),
     model_size: str = Form("medium"),
     language: str = Form(""),
     base_name: str = Form("dialogue"),
@@ -240,6 +250,10 @@ async def dialogue_export_api(
     make_srt: bool = Form(True),
     make_tts: bool = Form(True),
     mono_clips: bool = Form(True),
+    auto_adjust: bool = Form(True),
+    min_len: float = Form(2.0),
+    max_len: float = Form(10.0),
+    segments: str = Form(""),
 ):
     job_id = uuid.uuid4().hex[:12]
     job_dir = os.path.join(OUTPUT_DIR, job_id)
@@ -260,7 +274,20 @@ async def dialogue_export_api(
             "message": "準備中...",
             "created": time.time(),
         }
+    parsed_segments = []
+    if segments:
+        import json as _json
+        try:
+            for s in _json.loads(segments):
+                st, en = float(s["start"]), float(s["end"])
+                text = str(s.get("text", "")).strip()
+                if en - st >= 0.05 and text:
+                    parsed_segments.append({"start": st, "end": en, "text": text})
+        except (ValueError, KeyError, TypeError):
+            raise HTTPException(400, "セグメントデータが不正です")
+
     opts = {
+        "action": action if action in ("analyze", "export") else "analyze",
         "model_size": model_size,
         "language": language,
         "base_name": safe_base,
@@ -268,6 +295,10 @@ async def dialogue_export_api(
         "make_srt": make_srt,
         "make_tts": make_tts,
         "mono_clips": mono_clips,
+        "auto_adjust": auto_adjust,
+        "min_len": float(np.clip(min_len, 0.3, 60.0)),
+        "max_len": float(np.clip(max_len, 1.0, 120.0)),
+        "segments": parsed_segments,
     }
     threading.Thread(target=process_dialogue_job, args=(job_id, wav_path, opts), daemon=True).start()
     return {"id": job_id}

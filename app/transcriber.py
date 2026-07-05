@@ -41,7 +41,7 @@ class Transcriber:
 
     def transcribe(self, audio, sr, model_size="medium", language=None, progress_cb=None):
         """audio: (samples, channels) float32
-        返り値: segments [{start, end, text}]"""
+        返り値: (segments [{start,end,text}], words [{start,end,word}], 言語)"""
         with self._lock:
             model = self._get_model(model_size, progress_cb)
             mono = audio.mean(axis=1).astype(np.float32)
@@ -64,19 +64,114 @@ class Transcriber:
                 language=language or None,
                 fp16=self.device == "cuda",
                 verbose=None,
+                word_timestamps=True,
             )
 
         segments = []
+        words = []
         for seg in result.get("segments", []):
             text = seg["text"].strip()
-            if not text:
+            if text:
+                segments.append({
+                    "start": round(float(seg["start"]), 3),
+                    "end": round(float(seg["end"]), 3),
+                    "text": text,
+                })
+            for w in seg.get("words", []):
+                words.append({
+                    "start": round(float(w["start"]), 3),
+                    "end": round(float(w["end"]), 3),
+                    "word": w["word"],
+                })
+        return segments, words, result.get("language", language or "")
+
+
+_SENTENCE_END = ("。", "．", ".", "!", "?", "！", "？")
+
+
+def segment_words(words, min_len=2.0, max_len=10.0, gap_split=0.6):
+    """単語タイムスタンプから、min_len〜max_len 秒に収まるセリフ区間を組み立てる。
+
+    優先順位: 文末記号での区切り > 無音ギャップ > 単語境界での強制分割。
+    テキストは単語境界で正しく分割されるため TTS/RVC の学習データに安全。
+    """
+    if not words:
+        return []
+
+    # --- 1) 文候補に分割 (文末記号 or ギャップ) ---
+    sentences = []
+    cur = [words[0]]
+    for prev, w in zip(words, words[1:]):
+        if prev["word"].strip().endswith(_SENTENCE_END) or (w["start"] - prev["end"]) >= gap_split:
+            sentences.append(cur)
+            cur = [w]
+        else:
+            cur.append(w)
+    sentences.append(cur)
+
+    # --- 2) max_len を超える文は中央付近の最大ギャップで再帰分割 ---
+    def split_long(ws):
+        dur = ws[-1]["end"] - ws[0]["start"]
+        if dur <= max_len or len(ws) < 2:
+            return [ws]
+        best_gap, best_i = -1.0, None
+        for i in range(1, len(ws)):
+            pos = ws[i]["start"] - ws[0]["start"]
+            if pos < dur * 0.2 or pos > dur * 0.8:
                 continue
-            segments.append({
-                "start": round(float(seg["start"]), 3),
-                "end": round(float(seg["end"]), 3),
-                "text": text,
-            })
-        return segments, result.get("language", language or "")
+            gap = ws[i]["start"] - ws[i - 1]["end"]
+            if gap > best_gap:
+                best_gap, best_i = gap, i
+        if best_i is None:
+            best_i = len(ws) // 2
+        return split_long(ws[:best_i]) + split_long(ws[best_i:])
+
+    sentences = [part for s in sentences for part in split_long(s)]
+
+    # --- 3) min_len に満たない文は隣と結合 (max_len を超えない範囲で) ---
+    chunks = []
+    for s in sentences:
+        if chunks:
+            last = chunks[-1]
+            gap = s[0]["start"] - last[-1]["end"]
+            combined = s[-1]["end"] - last[0]["start"]
+            last_dur = last[-1]["end"] - last[0]["start"]
+            cur_dur = s[-1]["end"] - s[0]["start"]
+            if combined <= max_len and (last_dur < min_len or cur_dur < min_len or gap < 0.3):
+                last.extend(s)
+                continue
+        chunks.append(list(s))
+
+    # --- 4) それでも min_len 未満の断片は、隣接チャンクと結合 (max_len の1割超過まで許容) ---
+    tolerance = max_len * 1.1
+    i = 0
+    while i < len(chunks):
+        dur = chunks[i][-1]["end"] - chunks[i][0]["start"]
+        if dur >= min_len or len(chunks) < 2:
+            i += 1
+            continue
+        prev_ok = i > 0 and (chunks[i][-1]["end"] - chunks[i - 1][0]["start"]) <= tolerance
+        next_ok = i < len(chunks) - 1 and (chunks[i + 1][-1]["end"] - chunks[i][0]["start"]) <= tolerance
+        if next_ok:  # 前方結合を優先 (次のセリフの頭に付ける方が自然)
+            chunks[i + 1] = chunks[i] + chunks[i + 1]
+            chunks.pop(i)
+        elif prev_ok:
+            chunks[i - 1].extend(chunks[i])
+            chunks.pop(i)
+        else:
+            i += 1  # 結合先がない場合はそのまま (UI側で⚠表示)
+
+    segments = []
+    for c in chunks:
+        text = "".join(w["word"] for w in c).strip()
+        if not text:
+            continue
+        segments.append({
+            "start": round(c[0]["start"], 3),
+            "end": round(c[-1]["end"], 3),
+            "text": text,
+        })
+    return segments
 
 
 def _fmt_srt_time(t):

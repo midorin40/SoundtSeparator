@@ -1147,8 +1147,10 @@ async function applyRepair() {
   }
 }
 
-// ---------- セリフ書き出し ----------
+// ---------- セリフ書き出し (①解析 → ②一覧で調整 → ③書き出し) ----------
 let dialogueBusy = false;
+let dialogueSegments = []; // 編集可能なセグメント一覧
+let dialogueTrackIdx = -1;
 
 function openDialoguePanel() {
   // 対象トラックの選択肢を構築 (話し声/ボーカルがあれば初期選択)
@@ -1166,7 +1168,29 @@ function openDialoguePanel() {
   togglePanel("panel-dialogue");
 }
 
-async function runDialogueExport() {
+function dialogueForm(track, extra) {
+  const form = new FormData();
+  form.append("file", new Blob([encodeWav(track.chans, sampleRate)], { type: "audio/wav" }), "track.wav");
+  form.append("model_size", $("dg-model").value);
+  form.append("language", $("dg-lang").value);
+  form.append("base_name", baseFilename);
+  for (const [k, v] of Object.entries(extra)) form.append(k, v);
+  return form;
+}
+
+async function pollDialogueJob(id) {
+  while (true) {
+    await new Promise((r) => setTimeout(r, 1500));
+    const jr = await fetch("/api/jobs/" + id);
+    if (!jr.ok) throw new Error("ジョブ情報の取得に失敗しました");
+    const job = await jr.json();
+    if (job.status === "error") throw new Error(job.message);
+    if (job.status === "done") return job;
+    flashInfo(`セリフ書き出し: ${job.message || ""}`);
+  }
+}
+
+async function runDialogueAnalyze() {
   if (dialogueBusy) return;
   const trackIdx = parseInt($("dg-track").value, 10);
   const track = tracks[trackIdx];
@@ -1176,34 +1200,23 @@ async function runDialogueExport() {
   $("dg-run").disabled = true;
   $("dg-result").classList.add("hidden");
   try {
-    flashInfo(`${track.label} をアップロード中...`);
-    const form = new FormData();
-    form.append("file", new Blob([encodeWav(track.chans, sampleRate)], { type: "audio/wav" }), "track.wav");
-    form.append("model_size", $("dg-model").value);
-    form.append("language", $("dg-lang").value);
-    form.append("base_name", baseFilename);
-    form.append("make_clips", $("dg-clips").checked);
-    form.append("make_srt", $("dg-srt").checked);
-    form.append("make_tts", $("dg-tts").checked);
-    form.append("mono_clips", $("dg-mono").checked);
-
+    flashInfo(`${track.label} を解析中...`);
+    const form = dialogueForm(track, {
+      action: "analyze",
+      auto_adjust: $("dg-adjust").checked,
+      min_len: $("dg-min").value,
+      max_len: $("dg-max").value,
+    });
     const res = await fetch("/api/dialogue-export", { method: "POST", body: form });
-    if (!res.ok) throw new Error("ジョブの開始に失敗しました (" + res.status + ")");
+    if (!res.ok) throw new Error("解析の開始に失敗しました (" + res.status + ")");
     const { id } = await res.json();
+    const job = await pollDialogueJob(id);
 
-    // ポーリング
-    let job;
-    while (true) {
-      await new Promise((r) => setTimeout(r, 1500));
-      const jr = await fetch("/api/jobs/" + id);
-      if (!jr.ok) throw new Error("ジョブ情報の取得に失敗しました");
-      job = await jr.json();
-      if (job.status === "error") throw new Error(job.message);
-      if (job.status === "done") break;
-      flashInfo(`セリフ書き出し: ${job.message || ""}`);
-    }
-    showDialogueResult(job, trackIdx);
-    flashInfo(`セリフ書き出しが完了しました (${job.segments.length}件検出 / 言語: ${job.language})`);
+    dialogueSegments = job.segments.map((s) => ({ start: s.start, end: s.end, text: s.text }));
+    dialogueTrackIdx = trackIdx;
+    renderDialogueList(job.language);
+    $("dg-result").classList.remove("hidden");
+    flashInfo(`${dialogueSegments.length}件のセリフを検出しました。一覧で確認・調整して「② 書き出し」へ`);
   } catch (err) {
     showError(err.message);
   } finally {
@@ -1212,28 +1225,90 @@ async function runDialogueExport() {
   }
 }
 
-function showDialogueResult(job, trackIdx) {
-  $("dg-zip").href = job.zip_url;
-  $("dg-summary").textContent = `${job.segments.length}件のセリフを検出 (言語: ${job.language})。行をクリックするとその位置にジャンプします`;
+function renderDialogueList(language) {
+  const minL = parseFloat($("dg-min").value) || 0;
+  const maxL = parseFloat($("dg-max").value) || Infinity;
+  const durs = dialogueSegments.map((s) => s.end - s.start);
+  const total = durs.reduce((a, b) => a + b, 0);
+  $("dg-summary").textContent =
+    `${dialogueSegments.length}件 / 合計 ${total.toFixed(1)}秒` +
+    (language ? ` / 言語: ${language}` : "") +
+    ` / 長さ ${Math.min(...durs).toFixed(1)}〜${Math.max(...durs).toFixed(1)}秒`;
+
   const list = $("dg-segments");
   list.innerHTML = "";
-  job.segments.forEach((seg) => {
+  dialogueSegments.forEach((seg, i) => {
+    const dur = seg.end - seg.start;
     const row = document.createElement("div");
-    row.className = "dg-seg";
-    row.innerHTML = `<span class="dg-idx">${String(seg.index).padStart(3, "0")}</span>` +
-      `<span class="dg-time">${fmtTime(seg.start)}〜${fmtTime(seg.end)}</span>` +
-      `<span class="dg-text"></span>`;
-    row.querySelector(".dg-text").textContent = seg.text;
-    row.addEventListener("click", () => {
+    row.className = "dg-seg" + ($("dg-adjust").checked && (dur < minL || dur > maxL) ? " dg-warn" : "");
+    row.innerHTML =
+      `<button class="dg-play" title="この位置へジャンプ+範囲選択">▶</button>` +
+      `<span class="dg-idx">${String(i + 1).padStart(3, "0")}</span>` +
+      `<input class="dg-in dg-start" type="number" step="0.05" min="0" value="${seg.start.toFixed(2)}" title="開始秒">` +
+      `<span class="dg-sep">〜</span>` +
+      `<input class="dg-in dg-end" type="number" step="0.05" min="0" value="${seg.end.toFixed(2)}" title="終了秒">` +
+      `<span class="dg-dur">${dur.toFixed(1)}s</span>` +
+      `<input class="dg-text-in" type="text" value="" title="テキスト (直接編集できます)">` +
+      `<button class="dg-del" title="この行を書き出しから除外">✕</button>`;
+    row.querySelector(".dg-text-in").value = seg.text;
+
+    row.querySelector(".dg-play").addEventListener("click", () => {
       selection = { start: seg.start, end: seg.end };
-      setActiveTrack(trackIdx);
+      setActiveTrack(dialogueTrackIdx);
       renderSelection();
       updateToolbar();
       seek(seg.start);
     });
+    row.querySelector(".dg-start").addEventListener("change", (e) => {
+      seg.start = clamp(parseFloat(e.target.value) || 0, 0, seg.end - 0.05);
+      renderDialogueList(language);
+    });
+    row.querySelector(".dg-end").addEventListener("change", (e) => {
+      seg.end = clamp(parseFloat(e.target.value) || 0, seg.start + 0.05, duration());
+      renderDialogueList(language);
+    });
+    row.querySelector(".dg-text-in").addEventListener("input", (e) => { seg.text = e.target.value; });
+    row.querySelector(".dg-del").addEventListener("click", () => {
+      dialogueSegments.splice(i, 1);
+      renderDialogueList(language);
+    });
     list.appendChild(row);
   });
-  $("dg-result").classList.remove("hidden");
+}
+
+async function runDialogueExportFiles() {
+  if (dialogueBusy) return;
+  const track = tracks[dialogueTrackIdx];
+  if (!track || !dialogueSegments.length) { showError("先に「① 解析」を実行してください"); return; }
+
+  dialogueBusy = true;
+  $("dg-export").disabled = true;
+  try {
+    flashInfo("書き出し中...");
+    const form = dialogueForm(track, {
+      action: "export",
+      segments: JSON.stringify(dialogueSegments),
+      make_clips: $("dg-clips").checked,
+      make_srt: $("dg-srt").checked,
+      make_tts: $("dg-tts").checked,
+      mono_clips: $("dg-mono").checked,
+    });
+    const res = await fetch("/api/dialogue-export", { method: "POST", body: form });
+    if (!res.ok) throw new Error("書き出しの開始に失敗しました (" + res.status + ")");
+    const { id } = await res.json();
+    const job = await pollDialogueJob(id);
+
+    const a = document.createElement("a");
+    a.href = job.zip_url;
+    a.download = `${baseFilename}_dialogue.zip`;
+    a.click();
+    flashInfo(`書き出しが完了しました (${job.segments.length}件) — ZIPをダウンロードしています`);
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    dialogueBusy = false;
+    $("dg-export").disabled = false;
+  }
 }
 
 // ============================================================
@@ -1341,16 +1416,25 @@ $("overview").addEventListener("mousedown", (e) => {
 });
 
 function togglePanel(id) {
-  ["panel-silence-cut", "panel-denoise", "panel-repair", "panel-dialogue"].forEach((p) => {
+  ["panel-silence-cut", "panel-denoise", "panel-repair", "panel-dialogue", "panel-guide"].forEach((p) => {
     if (p === id) $(p).classList.toggle("hidden");
     else $(p).classList.add("hidden");
   });
 }
+$("tool-guide").addEventListener("click", () => togglePanel("panel-guide"));
+document.querySelectorAll(".guide-open").forEach((b) =>
+  b.addEventListener("click", () => {
+    const target = b.dataset.panel;
+    if (target === "panel-dialogue") openDialoguePanel();
+    else togglePanel(target);
+  })
+);
 $("tool-silence-cut").addEventListener("click", () => togglePanel("panel-silence-cut"));
 $("tool-denoise").addEventListener("click", () => togglePanel("panel-denoise"));
 $("tool-repair").addEventListener("click", () => togglePanel("panel-repair"));
 $("tool-dialogue").addEventListener("click", openDialoguePanel);
-$("dg-run").addEventListener("click", runDialogueExport);
+$("dg-run").addEventListener("click", runDialogueAnalyze);
+$("dg-export").addEventListener("click", runDialogueExportFiles);
 $("tool-addtrack").addEventListener("click", addTrack);
 
 $("rp-effect").addEventListener("change", () => {
