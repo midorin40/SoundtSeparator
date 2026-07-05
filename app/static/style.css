@@ -172,6 +172,13 @@ main { max-width: 1060px; margin: 26px auto 40px; padding: 0 20px; }
   display: flex; align-items: center; justify-content: center;
 }
 .play-btn:hover { transform: scale(1.07); box-shadow: 0 4px 28px rgba(56, 189, 248, 0.65); }
+.loop-btn { padding: 9px 12px; opacity: 0.6; }
+.loop-btn.active {
+  opacity: 1;
+  background: rgba(56, 189, 248, 0.2);
+  border-color: var(--dialog);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.35);
+}
 .time-display { font-variant-numeric: tabular-nums; font-size: 1.15rem; font-weight: 700; }
 .time-sep { color: var(--text-dim); margin: 0 6px; }
 #time-total { color: var(--text-dim); }

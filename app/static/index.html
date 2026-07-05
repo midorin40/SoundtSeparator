@@ -54,8 +54,8 @@
       <div class="dz-icon">🎵</div>
       <p class="dz-main">ここにファイルをドロップ</p>
       <p class="dz-sub">または <button id="browse-btn" class="link-btn">ファイルを選択</button></p>
-      <p class="dz-formats">WAV / MP3 / FLAC / M4A / MP4 / MKV など (動画は音声を抽出)</p>
-      <input type="file" id="file-input" accept="audio/*,video/*" hidden>
+      <p class="dz-formats">WAV / MP3 / FLAC / M4A / MP4 / MKV など (動画は音声を抽出) ／ .ssproj (保存したプロジェクトの再開)</p>
+      <input type="file" id="file-input" accept="audio/*,video/*,.ssproj" hidden>
     </div>
 
     <div class="quality-row">
@@ -86,6 +86,7 @@
     <div class="card transport-card">
       <div class="transport">
         <button id="play-btn" class="play-btn" title="再生/停止 (Space)">▶</button>
+        <button id="loop-btn" class="btn loop-btn" title="選択範囲をループ再生 (L) — 修復パラメータの聴き比べに便利">🔁</button>
         <div class="time-display"><span id="time-current">0:00.0</span><span class="time-sep">/</span><span id="time-total">0:00.0</span></div>
         <div class="master-meter-wrap" title="マスター出力レベル — 全トラック合計。CLIPが点いたら音割れしています (各トラックの音量を下げてください)">
           <span class="mm-label">OUT</span>
@@ -93,6 +94,7 @@
         </div>
         <div class="transport-right">
           <span id="result-filename" class="result-filename"></span>
+          <button id="save-proj-btn" class="btn" title="編集状態をプロジェクトファイル (.ssproj) に保存。後でドロップすると続きから再開できます">💾 保存</button>
           <button id="zip-btn" class="btn btn-primary">⬇ 選択ステム保存</button>
           <button id="new-btn" class="btn">＋ 新しいファイル</button>
         </div>
@@ -130,6 +132,7 @@
           <button id="tool-zoom-sel" class="tool-btn" title="選択範囲へズーム (Z)">🔍選択</button>
           <button id="tool-zoom-full" class="tool-btn" title="全体表示 (0)">全体</button>
           <button id="tool-autoscale" class="tool-btn" title="小さい音のトラックも波形が見えるよう表示だけ拡大します (実際の音量は変わりません)">📈 自動スケール</button>
+          <button id="tool-specview" class="tool-btn" title="波形⇔スペクトログラム表示の切替。ハム・ヒス・クリックなどのノイズはスペクトログラムの方が見つけやすい (縦=周波数、明るさ=音量)">🌈 スペクトル</button>
         </div>
         <div class="tool-group tg-help" data-label="ヘルプ">
           <button id="tool-guide" class="tool-btn" title="用途別の整音手順ガイド">📖 整音ガイド</button>

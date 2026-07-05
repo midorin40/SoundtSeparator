@@ -24,6 +24,7 @@ let playOffset = 0; // 秒
 let playStartCtxTime = 0;
 let rafId = null;
 let baseFilename = "audio";
+let loopMode = false;
 
 // エディタ状態
 let selection = null; // {start, end} 秒
@@ -35,6 +36,7 @@ const UNDO_LIMIT = 8;
 let editorBusy = false;
 const FADE_SAMPLES = 441; // 編集境界のクリックノイズ防止フェード (10ms @44.1kHz)
 let autoScale = localStorage.getItem("ssAutoScale") !== "0"; // 波形表示の自動スケール
+let viewMode = localStorage.getItem("ssViewMode") === "spec" ? "spec" : "wave"; // 波形 or スペクトログラム
 
 const duration = () => lengthSamples / sampleRate;
 
@@ -86,9 +88,14 @@ function updateOverview() {
 // ============================================================
 // アップロード
 // ============================================================
+function handleFile(f) {
+  if (f.name.toLowerCase().endsWith(".ssproj")) loadProject(f);
+  else startJob(f);
+}
+
 dropzone.addEventListener("click", () => fileInput.click());
 $("browse-btn").addEventListener("click", (e) => { e.stopPropagation(); fileInput.click(); });
-fileInput.addEventListener("change", () => { if (fileInput.files.length) startJob(fileInput.files[0]); });
+fileInput.addEventListener("change", () => { if (fileInput.files.length) handleFile(fileInput.files[0]); });
 
 ["dragover", "dragenter"].forEach((ev) =>
   dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add("dragover"); })
@@ -97,7 +104,7 @@ fileInput.addEventListener("change", () => { if (fileInput.files.length) startJo
   dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); })
 );
 dropzone.addEventListener("drop", (e) => {
-  if (e.dataTransfer.files.length) startJob(e.dataTransfer.files[0]);
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
 });
 
 async function startJob(file) {
@@ -152,7 +159,7 @@ async function pollJob(id, filename) {
 // ============================================================
 // 結果表示
 // ============================================================
-async function showResult(job, filename) {
+function initAudio() {
   audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
   if (!masterGain) {
     masterGain = audioCtx.createGain();
@@ -161,6 +168,10 @@ async function showResult(job, filename) {
     masterAnalyser.fftSize = 1024;
     masterGain.connect(masterAnalyser);
   }
+}
+
+async function showResult(job, filename) {
+  initAudio();
 
   const defs = [
     ...job.stems.map((s) => ({ ...s, defaultMuted: false, isOriginal: false })),
@@ -421,11 +432,19 @@ function layoutTrackCanvas(track) {
   const h = track.waveEl.clientHeight;
   track.canvas.width = Math.round(w * dpr);
   track.canvas.height = Math.round(h * dpr);
-  const peaks = computePeaks(track, track.canvas.width);
 
   const off = document.createElement("canvas");
   off.width = track.canvas.width;
   off.height = track.canvas.height;
+
+  if (viewMode === "spec") {
+    if (track.gainBadgeEl) track.gainBadgeEl.textContent = "";
+    renderSpectrogram(track, off);
+    track.baseCanvas = off;
+    return;
+  }
+
+  const peaks = computePeaks(track, track.canvas.width);
   const ctx = off.getContext("2d");
   const H = off.height, mid = H / 2;
   const grad = ctx.createLinearGradient(0, 0, 0, H);
@@ -465,6 +484,118 @@ function layoutTrackCanvas(track) {
   track.baseCanvas = off;
 }
 
+// ---------- スペクトログラム描画 ----------
+const SPEC_LUT = (() => {
+  // inferno風カラーマップ (暗→紫→赤→橙→黄→白)
+  const stops = [
+    [0.0, [10, 8, 24]],
+    [0.25, [64, 18, 96]],
+    [0.5, [168, 44, 92]],
+    [0.75, [242, 122, 42]],
+    [0.92, [252, 212, 84]],
+    [1.0, [255, 255, 224]],
+  ];
+  const lut = new Uint8Array(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const x = i / 255;
+    let k = 0;
+    while (k < stops.length - 2 && x > stops[k + 1][0]) k++;
+    const [x0, c0] = stops[k], [x1, c1] = stops[k + 1];
+    const t = clamp((x - x0) / (x1 - x0), 0, 1);
+    for (let c = 0; c < 3; c++) lut[i * 3 + c] = Math.round(c0[c] + (c1[c] - c0[c]) * t);
+  }
+  return lut;
+})();
+
+let _hannWin = null;
+function fftRadix2(re, im) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      const tr = re[i]; re[i] = re[j]; re[j] = tr;
+      const ti = im[i]; im[i] = im[j]; im[j] = ti;
+    }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = (-2 * Math.PI) / len;
+    const wr = Math.cos(ang), wi = Math.sin(ang);
+    const half = len >> 1;
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < half; k++) {
+        const a = i + k, b = a + half;
+        const vr = re[b] * cr - im[b] * ci;
+        const vi = re[b] * ci + im[b] * cr;
+        re[b] = re[a] - vr; im[b] = im[a] - vi;
+        re[a] += vr; im[a] += vi;
+        const nr = cr * wr - ci * wi;
+        ci = cr * wi + ci * wr;
+        cr = nr;
+      }
+    }
+  }
+}
+
+function renderSpectrogram(track, off) {
+  const FFT = 1024, HALF = FFT / 2;
+  const W = Math.min(off.width, 1200);
+  const H = Math.min(off.height, 200);
+  if (!_hannWin || _hannWin.length !== FFT) {
+    _hannWin = new Float32Array(FFT);
+    for (let i = 0; i < FFT; i++) _hannWin[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (FFT - 1));
+  }
+  const ch = track.chans[0];
+  const startS = viewStart * sampleRate;
+  const spp = (getViewDur() * sampleRate) / W;
+  const re = new Float32Array(FFT), im = new Float32Array(FFT);
+
+  // 対数周波数軸 (上=高域): 40Hz〜ナイキスト
+  const fmin = 40, fmax = sampleRate / 2;
+  const rowBin = new Uint16Array(H);
+  for (let y = 0; y < H; y++) {
+    const f = fmin * Math.pow(fmax / fmin, 1 - y / (H - 1));
+    rowBin[y] = clamp(Math.round((f * FFT) / sampleRate), 1, HALF - 1);
+  }
+
+  const tmp = document.createElement("canvas");
+  tmp.width = W;
+  tmp.height = H;
+  const tctx = tmp.getContext("2d");
+  const img = tctx.createImageData(W, H);
+  const px = img.data;
+  const norm = 1 / (FFT / 4); // Hann窓の振幅補正
+
+  for (let x = 0; x < W; x++) {
+    const center = Math.floor(startS + x * spp);
+    const s0 = center - HALF;
+    for (let i = 0; i < FFT; i++) {
+      const s = s0 + i;
+      re[i] = s >= 0 && s < lengthSamples ? ch[s] * _hannWin[i] : 0;
+      im[i] = 0;
+    }
+    fftRadix2(re, im);
+    for (let y = 0; y < H; y++) {
+      const b = rowBin[y];
+      const mag = Math.sqrt(re[b] * re[b] + im[b] * im[b]) * norm;
+      const db = 20 * Math.log10(mag + 1e-7);
+      const v = clamp((db + 90) / 70, 0, 1); // -90〜-20dB を表示レンジに
+      const li = Math.round(v * 255) * 3;
+      const p = (y * W + x) * 4;
+      px[p] = SPEC_LUT[li];
+      px[p + 1] = SPEC_LUT[li + 1];
+      px[p + 2] = SPEC_LUT[li + 2];
+      px[p + 3] = 255;
+    }
+  }
+  tctx.putImageData(img, 0, 0);
+  const ctx = off.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(tmp, 0, 0, off.width, off.height);
+}
+
 function shade(hex, factor) {
   const n = parseInt(hex.slice(1), 16);
   const r = Math.min(255, Math.round(((n >> 16) & 255) * factor));
@@ -474,13 +605,14 @@ function shade(hex, factor) {
 }
 
 function drawTrack(track, timeSec) {
+  if (!track.baseCanvas) layoutTrackCanvas(track); // 非表示タブ等でrAFが飛ばされた場合の保険
   const ctx = track.canvas.getContext("2d");
   const W = track.canvas.width, H = track.canvas.height;
   ctx.clearRect(0, 0, W, H);
   const vd = getViewDur();
   const frac = (timeSec - viewStart) / vd;
   const playedX = clamp(Math.round(frac * W), 0, W);
-  ctx.globalAlpha = 0.38;
+  ctx.globalAlpha = viewMode === "spec" ? 0.6 : 0.38;
   ctx.drawImage(track.baseCanvas, 0, 0);
   if (playedX > 0) {
     ctx.globalAlpha = 1;
@@ -576,6 +708,10 @@ function stopSources() {
 async function play() {
   if (editorBusy) return;
   if (audioCtx.state === "suspended") await audioCtx.resume();
+  // ループ再生: 選択範囲の外にいたら範囲の先頭から
+  if (loopMode && selection && (playOffset < selection.start || playOffset >= selection.end - 0.01)) {
+    playOffset = selection.start;
+  }
   if (playOffset >= duration() - 0.01) playOffset = 0;
   startSources(playOffset);
   playStartCtxTime = audioCtx.currentTime;
@@ -609,7 +745,14 @@ function seek(t) {
 
 function tick() {
   render();
-  if (currentTime() >= duration()) { pause(); playOffset = 0; render(); return; }
+  if (isPlaying && loopMode && selection && currentTime() >= selection.end) {
+    seek(selection.start);
+  } else if (currentTime() >= duration()) {
+    pause();
+    playOffset = 0;
+    render();
+    return;
+  }
   if (isPlaying) rafId = requestAnimationFrame(tick);
 }
 
@@ -660,6 +803,14 @@ function updateMeters() {
 
 playBtn.addEventListener("click", () => (isPlaying ? pause() : play()));
 $("new-btn").addEventListener("click", () => location.reload());
+
+function toggleLoop() {
+  loopMode = !loopMode;
+  $("loop-btn").classList.toggle("active", loopMode);
+  if (loopMode && !selection) flashInfo("ループ再生ON — 範囲を選択するとその区間をリピートします");
+  else flashInfo(loopMode ? "選択範囲をループ再生します" : "ループ再生OFF");
+}
+$("loop-btn").addEventListener("click", toggleLoop);
 
 // ============================================================
 // 範囲選択
@@ -1586,6 +1737,17 @@ $("guide-close").addEventListener("click", () => {
   localStorage.setItem("ssGuideDismissed", "1");
 });
 
+$("tool-specview").addEventListener("click", () => {
+  viewMode = viewMode === "spec" ? "wave" : "spec";
+  localStorage.setItem("ssViewMode", viewMode);
+  $("tool-specview").classList.toggle("active", viewMode === "spec");
+  requestViewRefresh();
+  flashInfo(viewMode === "spec"
+    ? "スペクトログラム表示 — 縦=周波数(上が高音)、明るさ=音量。ハムは横線、クリックは縦線に見えます"
+    : "波形表示に戻しました");
+});
+$("tool-specview").classList.toggle("active", viewMode === "spec");
+
 function viewCenterT() {
   // 再生位置が画面内ならそこを、外なら表示中央を基準にズーム
   const t = currentTime();
@@ -1722,6 +1884,8 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault(); setView(0, duration());
   } else if (e.key === "z" && !e.ctrlKey) {
     e.preventDefault(); zoomToSelection();
+  } else if (e.key === "l" && !e.ctrlKey) {
+    e.preventDefault(); toggleLoop();
   }
 });
 
@@ -1784,6 +1948,127 @@ $("zip-btn").addEventListener("click", () => {
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 });
+
+// ---------- プロジェクト保存 / 再開 (.ssproj = 無圧縮ZIP) ----------
+function saveProject() {
+  if (!tracks.length) return;
+  const meta = {
+    version: 1,
+    app: "SoundtSeparator",
+    sampleRate,
+    baseFilename,
+    sourceName: $("result-filename").textContent,
+    tracks: tracks.map((t) => ({
+      name: t.name,
+      label: t.label,
+      color: t.color,
+      muted: t.muted,
+      isOriginal: !!t.isOriginal,
+      custom: !!t.custom,
+      volumeDb: t.volumeDb,
+      exportChecked: !!t.exportChecked,
+    })),
+  };
+  const files = [
+    { name: "project.json", data: new TextEncoder().encode(JSON.stringify(meta, null, 1)) },
+    ...tracks.map((t, i) => ({ name: `track_${i}.wav`, data: encodeWav(t.chans, sampleRate) })),
+  ];
+  const zip = makeZip(files);
+  const url = URL.createObjectURL(new Blob([zip], { type: "application/octet-stream" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${baseFilename}.ssproj`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  flashInfo("プロジェクトを保存しました — このファイルをドロップすると編集を再開できます");
+}
+$("save-proj-btn").addEventListener("click", saveProject);
+
+function parseZip(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let eocd = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 22 - 65536); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("プロジェクトファイルを認識できません");
+  const count = dv.getUint16(eocd + 10, true);
+  let off = dv.getUint32(eocd + 16, true);
+  const entries = new Map();
+  const dec = new TextDecoder();
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(off, true) !== 0x02014b50) break;
+    const method = dv.getUint16(off + 10, true);
+    const compSize = dv.getUint32(off + 20, true);
+    const nameLen = dv.getUint16(off + 28, true);
+    const extraLen = dv.getUint16(off + 30, true);
+    const commentLen = dv.getUint16(off + 32, true);
+    const lho = dv.getUint32(off + 42, true);
+    const name = dec.decode(bytes.subarray(off + 46, off + 46 + nameLen));
+    if (method !== 0) throw new Error("このアプリで保存した .ssproj ファイルを使ってください");
+    const lNameLen = dv.getUint16(lho + 26, true);
+    const lExtraLen = dv.getUint16(lho + 28, true);
+    const dataOff = lho + 30 + lNameLen + lExtraLen;
+    entries.set(name, bytes.subarray(dataOff, dataOff + compSize));
+    off += 46 + nameLen + extraLen + commentLen;
+  }
+  return entries;
+}
+
+async function loadProject(file) {
+  hideError();
+  uploadView.classList.add("hidden");
+  progressView.classList.remove("hidden");
+  $("progress-filename").textContent = file.name;
+  $("progress-message").textContent = "プロジェクトを読み込み中...";
+  $("progress-percent").textContent = "";
+  try {
+    const entries = parseZip(new Uint8Array(await file.arrayBuffer()));
+    const projRaw = entries.get("project.json");
+    if (!projRaw) throw new Error("プロジェクトファイルが壊れています (project.json がありません)");
+    const proj = JSON.parse(new TextDecoder().decode(projRaw));
+    baseFilename = proj.baseFilename || file.name.replace(/\.[^.]+$/, "");
+    initAudio();
+
+    const buffers = await Promise.all(
+      proj.tracks.map(async (t, i) => {
+        const data = entries.get(`track_${i}.wav`);
+        if (!data) throw new Error(`音声データが見つかりません (track_${i}.wav)`);
+        return audioCtx.decodeAudioData(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+      })
+    );
+    sampleRate = buffers[0].sampleRate;
+    lengthSamples = Math.max(...buffers.map((b) => b.length));
+    tracksEl.innerHTML = "";
+    tracks = proj.tracks.map((t, i) =>
+      makeTrack(
+        { name: t.name, label: t.label, color: t.color, defaultMuted: !!t.muted, isOriginal: !!t.isOriginal, custom: !!t.custom },
+        buffers[i]
+      )
+    );
+    // 音量・保存チェックを復元
+    proj.tracks.forEach((t, i) => {
+      const tr = tracks[i];
+      if (typeof t.volumeDb === "number" && t.volumeDb !== 0) {
+        tr.volNum.value = t.volumeDb;
+        tr.volNum.dispatchEvent(new Event("change"));
+      }
+      if (t.exportChecked === false && !tr.isOriginal) tr.el.querySelector(".exp-input").click();
+    });
+
+    progressView.classList.add("hidden");
+    resultView.classList.remove("hidden");
+    $("result-filename").textContent = proj.sourceName || file.name;
+    $("time-total").textContent = fmtTime(duration());
+    $("time-current").textContent = fmtTime(0);
+    updateToolbar();
+    updateZipBtn();
+    requestAnimationFrame(() => refreshAll());
+    flashInfo(`プロジェクトを読み込みました (${tracks.length}トラック)`);
+  } catch (err) {
+    showError(err.message);
+    resetToUpload();
+  }
+}
 
 // ---------- 最小ZIPライター (無圧縮 + UTF-8ファイル名) ----------
 const CRC_TABLE = (() => {
