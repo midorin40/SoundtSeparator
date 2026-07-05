@@ -284,6 +284,12 @@ main { max-width: 1060px; margin: 26px auto 40px; padding: 0 20px; }
   color: var(--text); font-family: inherit; font-size: 0.9rem; font-weight: 800;
 }
 .rp-note { color: var(--text-dim); font-size: 0.78rem; margin-top: 8px; }
+.exp-chk {
+  display: flex; align-items: center; gap: 2px; cursor: pointer;
+  font-size: 0.85rem; opacity: 0.55; transition: opacity 0.12s;
+}
+.exp-chk:has(input:checked) { opacity: 1; }
+.exp-chk input { accent-color: var(--accent); cursor: pointer; }
 
 .track.active-track { border-color: rgba(129, 140, 248, 0.55); }
 .track.active-track .track-side {

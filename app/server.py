@@ -235,6 +235,7 @@ def apply_effect(
     effect: str = Form(...),
     sensitivity: float = Form(0.5),
     base_freq: float = Form(50.0),
+    target_lufs: float = Form(-14.0),
 ):
     """範囲修復エフェクト。クライアントは選択範囲+前後コンテキストのWAVを送り、
     処理済みの同じ長さのWAVを受け取って選択範囲だけをクロスフェードで書き戻す。
@@ -244,18 +245,39 @@ def apply_effect(
     raw = file.file.read()
     audio, sr = sf.read(io.BytesIO(raw), dtype="float32", always_2d=True)
 
+    headers = {}
     if effect == "declick":
         out = declick(audio, sensitivity=sensitivity, sr=sr)
     elif effect == "dehum":
         out = dehum(audio, base_freq=base_freq, sr=sr)
     elif effect == "dereverb":
         out = engine.dereverb(audio.T).T  # (samples, ch) <-> (ch, samples)
+    elif effect == "loudnorm":
+        # ITU-R BS.1770 準拠のラウドネス測定 → 目標LUFSへゲイン調整
+        import pyloudnorm
+
+        meter = pyloudnorm.Meter(sr)
+        measured = float(meter.integrated_loudness(audio.astype(np.float64)))
+        if not np.isfinite(measured) or measured < -70:
+            raise HTTPException(400, "音が小さすぎてラウドネスを測定できません")
+        gain_db = float(np.clip(target_lufs, -36.0, -5.0)) - measured
+        gain = 10 ** (gain_db / 20)
+        # クリップ防止: ピークが -1dBTP を超えないようゲインを制限
+        peak = float(np.abs(audio).max()) * gain
+        limit = 10 ** (-1 / 20)
+        if peak > limit:
+            gain *= limit / peak
+        out = audio * gain
+        headers = {
+            "X-Measured-LUFS": f"{measured:.1f}",
+            "X-Applied-Gain-DB": f"{20 * np.log10(gain):.1f}",
+        }
     else:
         raise HTTPException(400, "unknown effect")
 
     buf = io.BytesIO()
     sf.write(buf, np.clip(out, -1.0, 1.0), sr, format="WAV", subtype="PCM_16")
-    return Response(content=buf.getvalue(), media_type="audio/wav")
+    return Response(content=buf.getvalue(), media_type="audio/wav", headers=headers)
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

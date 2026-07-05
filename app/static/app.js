@@ -129,6 +129,7 @@ async function showResult(job, filename) {
   $("time-total").textContent = fmtTime(duration());
   $("time-current").textContent = fmtTime(0);
   updateToolbar();
+  updateZipBtn();
 
   requestAnimationFrame(() => refreshAll());
 }
@@ -171,6 +172,7 @@ function makeTrack(def, bufferOrChans) {
         <button class="ms-btn btn-m" title="ミュート">M</button>
         <button class="ms-btn btn-s" title="ソロ">S</button>
         <input type="range" class="vol-slider" min="0" max="1.5" step="0.01" value="1" title="音量">
+        <label class="exp-chk" title="「選択ステム保存」の対象に含める"><input type="checkbox" class="exp-input"${def.isOriginal ? "" : " checked"}>💾</label>
         <button class="dl-btn" title="このステムをWAV保存 (編集内容を含む)">⬇</button>
         ${def.isOriginal ? "" : '<button class="dl-btn del-btn" title="トラックを削除">✕</button>'}
       </div>
@@ -195,6 +197,11 @@ function makeTrack(def, bufferOrChans) {
   el.querySelector(".vol-slider").addEventListener("input", (e) => {
     track.volume = parseFloat(e.target.value);
     applyGains();
+  });
+  track.exportChecked = !def.isOriginal;
+  el.querySelector(".exp-input").addEventListener("change", (e) => {
+    track.exportChecked = e.target.checked;
+    updateZipBtn();
   });
   el.querySelector(".dl-btn").addEventListener("click", () => downloadTrack(track));
   const delBtn = el.querySelector(".del-btn");
@@ -244,6 +251,7 @@ function addTrack() {
   layoutTrackCanvas(track);
   refreshAll();
   updateToolbar();
+  updateZipBtn();
   flashInfo(`「${track.label}」を追加しました — 移動・貼り付け先に使えます (取り消し履歴はリセット)`);
 }
 
@@ -288,6 +296,7 @@ function deleteTrack(track) {
   clearSelection();
   refreshAll();
   updateToolbar();
+  updateZipBtn();
 }
 
 // ============================================================
@@ -872,6 +881,7 @@ const REPAIR_NOTES = {
   fadein: "選択範囲の音量を 0 から徐々に上げます",
   fadeout: "選択範囲の音量を徐々に 0 へ下げます",
   normalize: "選択範囲のピークが -1dB になるよう音量を揃えます",
+  loudnorm: "トラック全体を配信プラットフォームの基準ラウドネス (LUFS) に合わせます。範囲選択は不要です (ITU-R BS.1770準拠、クリップ防止付き)",
 };
 
 function applyClientEffect(track, s, e, effect) {
@@ -890,13 +900,60 @@ function applyClientEffect(track, s, e, effect) {
   return true;
 }
 
+async function applyLoudnorm() {
+  if (activeTrackIdx < 0) { showError("対象トラックをクリックして選択してください"); return; }
+  if (editorBusy) return;
+  const track = tracks[activeTrackIdx];
+  const platform = $("rp-platform").value;
+  const target = platform === "custom" ? parseFloat($("rp-lufs").value) : parseFloat(platform);
+  if (isNaN(target)) { showError("目標LUFSが不正です"); return; }
+  if (isPlaying) pause();
+
+  editorBusy = true;
+  updateToolbar();
+  pushUndo();
+  try {
+    flashInfo(`${track.label} のラウドネスを測定・調整中...`);
+    const form = new FormData();
+    form.append("file", new Blob([encodeWav(track.chans, sampleRate)], { type: "audio/wav" }), "track.wav");
+    form.append("effect", "loudnorm");
+    form.append("target_lufs", String(target));
+    const res = await fetch("/api/effect", { method: "POST", body: form });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || "ラウドネス調整に失敗しました");
+    }
+    const measured = res.headers.get("X-Measured-LUFS");
+    const gainDb = res.headers.get("X-Applied-Gain-DB");
+    const buf = await audioCtx.decodeAudioData(await res.arrayBuffer());
+    const chans = [];
+    for (let c = 0; c < buf.numberOfChannels; c++) {
+      const arr = new Float32Array(lengthSamples);
+      arr.set(buf.getChannelData(c).subarray(0, Math.min(buf.length, lengthSamples)));
+      chans.push(arr);
+    }
+    if (chans.length === 1) chans.push(new Float32Array(chans[0]));
+    track.chans = chans;
+    invalidateBuffers();
+    refreshAll();
+    flashInfo(`${track.label}: ${measured} LUFS → 目標 ${target} LUFS (ゲイン ${gainDb > 0 ? "+" : ""}${gainDb}dB)`);
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    editorBusy = false;
+    updateToolbar();
+  }
+}
+
 async function applyRepair() {
+  const effect = $("rp-effect").value;
+  if (effect === "loudnorm") return applyLoudnorm();
+
   const se = selSamples();
   if (!se) { showError("先に修復したい範囲をドラッグで選択してください"); return; }
   if (activeTrackIdx < 0) { showError("対象トラックの波形をドラッグして選択してください"); return; }
   if (editorBusy) return;
 
-  const effect = $("rp-effect").value;
   const mix = parseFloat($("rp-mix").value);
   const track = tracks[activeTrackIdx];
   const [s, e] = se;
@@ -1026,7 +1083,14 @@ $("rp-effect").addEventListener("change", () => {
   $("rp-sens-row").classList.toggle("hidden", v !== "declick");
   $("rp-hum-row").classList.toggle("hidden", v !== "dehum");
   $("rp-mix-row").classList.toggle("hidden", !["declick", "dereverb", "dehum"].includes(v));
+  $("rp-platform-row").classList.toggle("hidden", v !== "loudnorm");
+  $("rp-lufs-row").classList.toggle("hidden", v !== "loudnorm" || $("rp-platform").value !== "custom");
   $("rp-note").textContent = REPAIR_NOTES[v] || "";
+});
+$("rp-platform").addEventListener("change", () => {
+  const custom = $("rp-platform").value === "custom";
+  $("rp-lufs-row").classList.toggle("hidden", !custom);
+  if (!custom) $("rp-lufs").value = $("rp-platform").value;
 });
 $("rp-sensitivity").addEventListener("input", (e) => {
   $("rp-sens-val").textContent = Math.round(parseFloat(e.target.value) * 100) + "%";
@@ -1123,10 +1187,19 @@ function downloadTrack(track) {
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
+function updateZipBtn() {
+  const n = tracks.filter((t) => t.exportChecked).length;
+  const btn = $("zip-btn");
+  btn.textContent = `⬇ 選択ステム保存 (${n})`;
+  btn.disabled = n === 0;
+  btn.title = n === 1 ? "チェックした1ステムをWAVで保存" : "チェックしたステムをZIPで一括保存 (💾で選択)";
+}
+
 $("zip-btn").addEventListener("click", () => {
-  const files = tracks
-    .filter((t) => !t.isOriginal)
-    .map((t) => ({ name: `${baseFilename}_${t.label}.wav`, data: encodeWav(t.chans, sampleRate) }));
+  const targets = tracks.filter((t) => t.exportChecked);
+  if (!targets.length) return;
+  if (targets.length === 1) { downloadTrack(targets[0]); return; }
+  const files = targets.map((t) => ({ name: `${baseFilename}_${t.label}.wav`, data: encodeWav(t.chans, sampleRate) }));
   const zip = makeZip(files);
   const url = URL.createObjectURL(new Blob([zip], { type: "application/zip" }));
   const a = document.createElement("a");

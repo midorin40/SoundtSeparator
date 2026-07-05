@@ -24,7 +24,7 @@ echo [2/4] PyTorch (CUDA 12.4) をインストール... (約2.5GB)
 uv pip install --python .venv torch torchaudio --index-url https://download.pytorch.org/whl/cu124 || (pause & exit /b 1)
 
 echo [3/4] 依存パッケージをインストール...
-uv pip install --python .venv demucs fastapi "uvicorn[standard]" python-multipart soundfile librosa omegaconf ml_collections beartype einops spafe noisereduce || (pause & exit /b 1)
+uv pip install --python .venv demucs fastapi "uvicorn[standard]" python-multipart soundfile librosa omegaconf ml_collections beartype einops spafe noisereduce pyloudnorm || (pause & exit /b 1)
 
 echo [4/4] rotary-embedding-torch (torch非依存モード)...
 uv pip install --python .venv --no-deps rotary-embedding-torch || (pause & exit /b 1)
