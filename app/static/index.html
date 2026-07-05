@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sound Separator — 音源分離</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎛️</text></svg>">
+</head>
+<body>
+<div class="bg-glow glow-1"></div>
+<div class="bg-glow glow-2"></div>
+<div class="bg-glow glow-3"></div>
+
+<header>
+  <h1><span class="logo-icon">🎛️</span> Sound <span class="grad">Separator</span></h1>
+  <p class="subtitle">AIによる音源分離 + 波形編集スタジオ</p>
+</header>
+
+<main>
+  <!-- アップロード画面 -->
+  <section id="upload-view" class="card">
+    <div class="mode-row">
+      <label class="mode-card">
+        <input type="radio" name="mode" value="dme" checked>
+        <div class="mode-body">
+          <div class="mode-title">🎬 映像・動画音声</div>
+          <div class="mode-stems">
+            <span class="tag tag-dialog">話し声</span>
+            <span class="tag tag-effect">効果音</span>
+            <span class="tag tag-music">BGM</span>
+          </div>
+          <div class="mode-desc">映画・アニメ・実況・配信など<br>モデル: BandIt Plus</div>
+        </div>
+      </label>
+      <label class="mode-card">
+        <input type="radio" name="mode" value="music">
+        <div class="mode-body">
+          <div class="mode-title">🎸 音楽</div>
+          <div class="mode-stems">
+            <span class="tag tag-vocals">ボーカル</span>
+            <span class="tag tag-drums">ドラム</span>
+            <span class="tag tag-bass">ベース</span>
+            <span class="tag tag-effect">ギター</span>
+            <span class="tag tag-dialog">ピアノ</span>
+            <span class="tag tag-other">他</span>
+          </div>
+          <div class="mode-desc">楽曲を楽器ごとに6ステム分離<br>モデル: BS-Roformer + Demucs 6s</div>
+        </div>
+      </label>
+    </div>
+
+    <div id="dropzone">
+      <div class="dz-icon">🎵</div>
+      <p class="dz-main">ここにファイルをドロップ</p>
+      <p class="dz-sub">または <button id="browse-btn" class="link-btn">ファイルを選択</button></p>
+      <p class="dz-formats">WAV / MP3 / FLAC / M4A / MP4 / MKV など (動画は音声を抽出)</p>
+      <input type="file" id="file-input" accept="audio/*,video/*" hidden>
+    </div>
+
+    <div class="quality-row">
+      <span class="quality-label">品質</span>
+      <div class="quality-options">
+        <label><input type="radio" name="quality" value="fast"><span>高速</span></label>
+        <label><input type="radio" name="quality" value="standard" checked><span>標準</span></label>
+        <label><input type="radio" name="quality" value="high"><span>高品質<small>(数倍時間)</small></span></label>
+      </div>
+    </div>
+  </section>
+
+  <!-- 処理中画面 -->
+  <section id="progress-view" class="card hidden">
+    <div class="progress-info">
+      <div class="spinner"></div>
+      <div>
+        <p id="progress-filename" class="progress-filename"></p>
+        <p id="progress-message" class="progress-message">準備中...</p>
+      </div>
+      <span id="progress-percent" class="progress-percent">0%</span>
+    </div>
+    <div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div>
+  </section>
+
+  <!-- 結果画面 -->
+  <section id="result-view" class="hidden">
+    <div class="card transport-card">
+      <div class="transport">
+        <button id="play-btn" class="play-btn" title="再生/停止 (Space)">▶</button>
+        <div class="time-display"><span id="time-current">0:00.0</span><span class="time-sep">/</span><span id="time-total">0:00.0</span></div>
+        <div class="transport-right">
+          <span id="result-filename" class="result-filename"></span>
+          <button id="zip-btn" class="btn btn-primary">⬇ 全ステム保存 (ZIP)</button>
+          <button id="new-btn" class="btn">＋ 新しいファイル</button>
+        </div>
+      </div>
+      <!-- 編集ツールバー -->
+      <div class="toolbar">
+        <div class="tool-group">
+          <button id="tool-cut" class="tool-btn" title="選択したトラックから切り取る(その場は無音に)。他のトラックには影響しません (Ctrl+X)">✂ カット</button>
+          <button id="tool-copy" class="tool-btn" title="選択したトラックの範囲をコピー (Ctrl+C)">⧉ コピー</button>
+          <button id="tool-paste" class="tool-btn" title="クリックで選んだトラックへ、元と同じ時間位置にミックス貼り付け (Ctrl+V)">⇥ 貼り付け</button>
+          <select id="tool-move" class="tool-btn" title="選択範囲を別のトラックへ移動 (同じ時間位置)">
+            <option value="">➜ 移動先…</option>
+          </select>
+          <button id="tool-silence" class="tool-btn" title="いらない音をその場で消す(無音化)。尺もクリップボードも変わりません (Delete)">🧹 除去</button>
+          <button id="tool-ripple" class="tool-btn" title="選択範囲を全トラックから削除して前後を詰める・尺が縮みます (Shift+Delete)">⌦ 詰め削除</button>
+          <button id="tool-deselect" class="tool-btn" title="選択解除 (Esc)">✕</button>
+        </div>
+        <div class="tool-group">
+          <button id="tool-silence-cut" class="tool-btn" title="無音区間を自動検出して削除">✁ 無音カット</button>
+          <button id="tool-denoise" class="tool-btn" title="選択範囲をノイズとして学習し全体から除去">〜 ノイズ除去</button>
+          <button id="tool-repair" class="tool-btn" title="選択範囲の修復・エフェクト (クリック除去 / リバーブ除去 / ハム除去 / フェード / ノーマライズ)">🔧 修復</button>
+        </div>
+        <div class="tool-group">
+          <button id="tool-addtrack" class="tool-btn" title="無音の新規トラックを追加 (移動・貼り付け先として使えます)">＋ トラック</button>
+          <button id="tool-undo" class="tool-btn" title="元に戻す (Ctrl+Z)">↶</button>
+          <button id="tool-redo" class="tool-btn" title="やり直し (Ctrl+Y)">↷</button>
+        </div>
+        <span id="selection-info" class="selection-info"></span>
+      </div>
+      <!-- 無音カット設定パネル -->
+      <div id="panel-silence-cut" class="panel hidden">
+        <b>無音カット</b> — しきい値より小さい音が続く区間を全トラックから削除します
+        <div class="panel-row">
+          <label>しきい値 <input type="number" id="sc-threshold" value="-45" step="1" max="0" min="-90"> dB</label>
+          <label>最小無音長 <input type="number" id="sc-minlen" value="0.5" step="0.1" min="0.1"> 秒</label>
+          <label>前後に残す <input type="number" id="sc-pad" value="0.1" step="0.05" min="0"> 秒</label>
+          <button id="sc-run" class="btn btn-primary">実行</button>
+          <button class="btn panel-close">閉じる</button>
+        </div>
+      </div>
+      <!-- 修復・エフェクトパネル -->
+      <div id="panel-repair" class="panel hidden">
+        <b>修復・エフェクト</b> — 範囲を選択し、対象トラック（ドラッグしたトラック）に適用します
+        <div class="panel-row">
+          <label>種類
+            <select id="rp-effect">
+              <option value="declick">クリック / リップノイズ除去</option>
+              <option value="dereverb">リバーブ除去 (AIモデル)</option>
+              <option value="dehum">ハムノイズ除去 (電源ノイズ)</option>
+              <option value="fadein">フェードイン</option>
+              <option value="fadeout">フェードアウト</option>
+              <option value="normalize">ノーマライズ (-1dB)</option>
+            </select>
+          </label>
+          <label id="rp-sens-row">感度 <input type="range" id="rp-sensitivity" min="0.1" max="1" step="0.05" value="0.5"> <span id="rp-sens-val">50%</span></label>
+          <label id="rp-hum-row" class="hidden">電源周波数
+            <select id="rp-humfreq">
+              <option value="50">50 Hz (東日本)</option>
+              <option value="60">60 Hz (西日本)</option>
+            </select>
+          </label>
+          <label id="rp-mix-row">適用量 <input type="range" id="rp-mix" min="0.2" max="1" step="0.05" value="1"> <span id="rp-mix-val">100%</span></label>
+          <button id="rp-run" class="btn btn-primary">実行</button>
+          <button class="btn panel-close">閉じる</button>
+        </div>
+        <p id="rp-note" class="rp-note">短いインパルス性ノイズ (マウスクリック音・リップノイズ・プチ音) を検出して補間します</p>
+      </div>
+      <!-- ノイズ除去設定パネル -->
+      <div id="panel-denoise" class="panel hidden">
+        <b>ノイズ除去</b> — ノイズだけが鳴っている区間を選択してから実行してください。その区間をプロファイルとして学習し、トラック全体から除去します
+        <div class="panel-row">
+          <label>強さ <input type="range" id="dn-strength" min="0.2" max="1" step="0.05" value="0.9"> <span id="dn-strength-val">90%</span></label>
+          <label>対象
+            <select id="dn-scope">
+              <option value="active">選択したトラック</option>
+              <option value="all">全トラック</option>
+            </select>
+          </label>
+          <button id="dn-run" class="btn btn-primary">実行</button>
+          <button class="btn panel-close">閉じる</button>
+        </div>
+      </div>
+    </div>
+    <div id="tracks"></div>
+    <p class="hint">
+      ドラッグで範囲選択（ドラッグしたトラックが編集対象） ／ クリックでシーク＋対象切替 ／ <b>M</b>=ミュート <b>S</b>=ソロ ／ Space=再生 Ctrl+Z=取り消し<br>
+      💡 分類ミスの修正: 間違ったステムの音を範囲選択 →「➜ 移動先…」で正しいトラックへ（同じ時間位置のまま移動します）
+    </p>
+  </section>
+
+  <p id="error-box" class="error hidden"></p>
+</main>
+
+<footer>ローカル処理 — ファイルは外部に送信されません ／ Models: BandIt Plus・BS-Roformer・Demucs</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

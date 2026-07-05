@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# モデルチェックポイント (初回起動時に自動ダウンロード)
+models/*.ckpt
+models/*.chpt
+models/*.th
+models/*.partial
+
+# 分離結果・一時ファイル
+output/
+*.wav
+*.zip
+
+# OS
+Thumbs.db
+.DS_Store
