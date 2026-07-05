@@ -308,6 +308,37 @@ main { max-width: 1060px; margin: 26px auto 40px; padding: 0 20px; }
 .ms-btn.active-m { background: #b91c1c; border-color: #ef4444; color: #fff; }
 .ms-btn.active-s { background: #b45309; border-color: #f59e0b; color: #fff; }
 .vol-slider { flex: 1; min-width: 50px; accent-color: var(--accent); height: 4px; cursor: pointer; }
+
+/* ---- 音量 (dB) + レベルメーター ---- */
+.track-vol { display: flex; align-items: center; gap: 5px; }
+.vol-num {
+  width: 52px; padding: 2px 4px; border-radius: 6px;
+  border: 1px solid var(--card-border); background: rgba(0, 0, 0, 0.3);
+  color: var(--text); font-family: inherit; font-size: 0.75rem;
+  font-variant-numeric: tabular-nums; text-align: right;
+}
+.vol-unit { color: var(--text-dim); font-size: 0.7rem; }
+.track-meter {
+  position: relative; height: 7px; border-radius: 4px; overflow: hidden;
+  background: linear-gradient(90deg, #16a34a 0%, #22c55e 55%, #eab308 75%, #ef4444 95%);
+  margin-right: 18px;
+}
+.meter-mask {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 100%;
+  background: rgba(10, 14, 26, 0.92);
+  transition: width 0.05s linear;
+}
+.meter-clip {
+  position: absolute; right: -17px; top: 50%; transform: translateY(-58%);
+  font-size: 0.6rem; color: rgba(255, 255, 255, 0.18); line-height: 1;
+}
+.track-meter .meter-clip { right: -14px; }
+.meter-clip.clipping { color: #ef4444; text-shadow: 0 0 6px #ef4444; }
+
+.master-meter-wrap { display: flex; align-items: center; gap: 7px; min-width: 150px; }
+.mm-label { color: var(--text-dim); font-size: 0.68rem; font-weight: 700; letter-spacing: 0.05em; }
+.master-meter { width: 110px; margin-right: 34px; }
+.master-meter .meter-clip { right: -32px; font-size: 0.62rem; font-weight: 800; }
 .dl-btn {
   border: none; background: none; cursor: pointer; color: var(--text-dim);
   font-size: 1rem; padding: 2px 4px; border-radius: 6px;

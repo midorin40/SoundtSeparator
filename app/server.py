@@ -376,6 +376,30 @@ def download_dialogue_zip(job_id: str):
     return FileResponse(path, media_type="application/zip", filename="dialogue_export.zip")
 
 
+@app.post("/api/midi")
+def midi_export_api(
+    file: UploadFile = File(...),
+    onset: float = Form(0.5),
+    min_note_ms: float = Form(120.0),
+):
+    """トラックをAI採譜してMIDIを返す (basic-pitch)。sync def (イベントループを塞がない)。"""
+    from midi_export import audio_to_midi_bytes
+
+    tmp_dir = os.path.join(OUTPUT_DIR, "_midi_tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    tmp_path = os.path.join(tmp_dir, uuid.uuid4().hex[:12] + ".wav")
+    try:
+        with open(tmp_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        data = audio_to_midi_bytes(tmp_path, onset=onset, min_note_ms=min_note_ms)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+    return Response(content=data, media_type="audio/midi")
+
+
 @app.post("/api/denoise")
 def denoise(
     file: UploadFile = File(...),

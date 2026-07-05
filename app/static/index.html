@@ -87,6 +87,10 @@
       <div class="transport">
         <button id="play-btn" class="play-btn" title="再生/停止 (Space)">▶</button>
         <div class="time-display"><span id="time-current">0:00.0</span><span class="time-sep">/</span><span id="time-total">0:00.0</span></div>
+        <div class="master-meter-wrap" title="マスター出力レベル — 全トラック合計。CLIPが点いたら音割れしています (各トラックの音量を下げてください)">
+          <span class="mm-label">OUT</span>
+          <div class="track-meter master-meter"><div class="meter-mask" id="master-meter-mask"></div><span class="meter-clip" id="master-clip">CLIP</span></div>
+        </div>
         <div class="transport-right">
           <span id="result-filename" class="result-filename"></span>
           <button id="zip-btn" class="btn btn-primary">⬇ 選択ステム保存</button>
@@ -113,6 +117,7 @@
         </div>
         <div class="tool-group tg-export" data-label="書き出し">
           <button id="tool-dialogue" class="tool-btn" title="文字起こしして、セリフ単位の連番WAV・SRT字幕・TTS学習用データを書き出します">📝 セリフ書き出し</button>
+          <button id="tool-midi" class="tool-btn" title="トラックをAI採譜してMIDIファイルに変換します (メロディ・単音〜和音楽器向き)">🎹 MIDI</button>
         </div>
         <div class="tool-group tg-track" data-label="トラック・履歴">
           <button id="tool-addtrack" class="tool-btn" title="無音の新規トラックを追加 (移動・貼り付け先として使えます)">＋ トラック</button>
@@ -220,6 +225,18 @@
           </div>
         </div>
         <div class="panel-row"><button class="btn panel-close">閉じる</button></div>
+      </div>
+      <!-- MIDI書き出しパネル -->
+      <div id="panel-midi" class="panel panel-export hidden">
+        <b>🎹 MIDI書き出し</b> — トラックをAIで採譜し、MIDIファイル (.mid) に変換します（編集内容が反映されます）
+        <div class="panel-row">
+          <label>対象トラック <select id="md-track"></select></label>
+          <label title="低いほど多くの音を拾います (誤検出も増えます)">感度 <input type="range" id="md-sens" min="0.2" max="0.8" step="0.05" value="0.5"> <span id="md-sens-val">標準</span></label>
+          <label>最短ノート <input type="number" id="md-minnote" value="120" step="10" min="30" max="500"> ms</label>
+          <button id="md-run" class="btn btn-primary">実行</button>
+          <button class="btn panel-close">閉じる</button>
+        </div>
+        <p class="rp-note">ピアノ・ギター・ベース・ボーカルのメロディ採譜に向いています。ドラムや複雑なミックスには不向きです (先に🔬追加分離やステム分離で単一楽器にしてから実行してください)。テンポは120固定で書き出されます</p>
       </div>
       <!-- トラック追加分離パネル -->
       <div id="panel-subsep" class="panel hidden">

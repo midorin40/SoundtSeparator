@@ -13,6 +13,9 @@ const playBtn = $("play-btn");
 
 // ---------- 状態 ----------
 let audioCtx = null;
+let masterGain = null;
+let masterAnalyser = null;
+let meterBuf = null;
 let tracks = []; // {name,label,color,isOriginal,chans:[Float32Array],buffer,gainNode,source,muted,solo,volume,...}
 let sampleRate = 44100;
 let lengthSamples = 0;
@@ -151,6 +154,13 @@ async function pollJob(id, filename) {
 // ============================================================
 async function showResult(job, filename) {
   audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+  if (!masterGain) {
+    masterGain = audioCtx.createGain();
+    masterGain.connect(audioCtx.destination);
+    masterAnalyser = audioCtx.createAnalyser();
+    masterAnalyser.fftSize = 1024;
+    masterGain.connect(masterAnalyser);
+  }
 
   const defs = [
     ...job.stems.map((s) => ({ ...s, defaultMuted: false, isOriginal: false })),
@@ -204,8 +214,12 @@ function makeTrack(def, bufferOrChans) {
     source: null,
     gainNode: audioCtx.createGain(),
   };
+  track.volumeDb = 0;
   track.chans = Array.isArray(bufferOrChans) ? bufferOrChans : bufToChans(bufferOrChans);
-  track.gainNode.connect(audioCtx.destination);
+  track.gainNode.connect(masterGain || audioCtx.destination);
+  track.analyser = audioCtx.createAnalyser();
+  track.analyser.fftSize = 1024;
+  track.gainNode.connect(track.analyser);
 
   const el = document.createElement("div");
   el.className = "track";
@@ -219,11 +233,19 @@ function makeTrack(def, bufferOrChans) {
       <div class="track-controls">
         <button class="ms-btn btn-m" title="ミュート">M</button>
         <button class="ms-btn btn-s" title="ソロ">S</button>
-        <input type="range" class="vol-slider" min="0" max="1.5" step="0.01" value="1" title="音量">
         <label class="exp-chk" title="「選択ステム保存」の対象に含める"><input type="checkbox" class="exp-input"${def.isOriginal ? "" : " checked"}>💾</label>
         <button class="dl-btn" title="このステムをWAV保存 (編集内容を含む)">⬇</button>
         ${def.isOriginal ? "" : '<button class="dl-btn sub-btn" title="このトラックをさらに分離 (ドラム細分化 / リード・バックボーカル)">🔬</button>'}
         ${def.isOriginal ? "" : '<button class="dl-btn del-btn" title="トラックを削除">✕</button>'}
+      </div>
+      <div class="track-vol">
+        <input type="range" class="vol-slider" min="-36" max="12" step="0.5" value="0" title="音量 (dB) — 右の欄で数値入力もできます">
+        <input type="number" class="vol-num" min="-60" max="12" step="0.5" value="0" title="音量をdBで直接入力">
+        <span class="vol-unit">dB</span>
+      </div>
+      <div class="track-meter" title="出力レベル (音割れすると右端の●が赤く点灯)">
+        <div class="meter-mask"></div>
+        <span class="meter-clip">●</span>
       </div>
     </div>
     <div class="track-wave">
@@ -243,10 +265,21 @@ function makeTrack(def, bufferOrChans) {
 
   track.btnM.addEventListener("click", () => { track.muted = !track.muted; applyGains(); });
   track.btnS.addEventListener("click", () => { track.solo = !track.solo; applyGains(); });
-  el.querySelector(".vol-slider").addEventListener("input", (e) => {
-    track.volume = parseFloat(e.target.value);
+
+  // 音量: dBスライダー + 数値入力を同期
+  track.volSlider = el.querySelector(".vol-slider");
+  track.volNum = el.querySelector(".vol-num");
+  track.meterMask = el.querySelector(".meter-mask");
+  track.clipEl = el.querySelector(".meter-clip");
+  const setVol = (db) => {
+    track.volumeDb = clamp(isNaN(db) ? 0 : db, -60, 12);
+    track.volume = Math.pow(10, track.volumeDb / 20);
+    track.volSlider.value = clamp(track.volumeDb, -36, 12);
+    track.volNum.value = track.volumeDb;
     applyGains();
-  });
+  };
+  track.volSlider.addEventListener("input", (e) => setVol(parseFloat(e.target.value)));
+  track.volNum.addEventListener("change", (e) => setVol(parseFloat(e.target.value)));
   track.exportChecked = !def.isOriginal;
   el.querySelector(".exp-input").addEventListener("change", (e) => {
     track.exportChecked = e.target.checked;
@@ -590,6 +623,39 @@ function render() {
   tracks.forEach((tr) => drawTrack(tr, t));
   const op = $("overview-playhead");
   if (op) op.style.left = (t / duration()) * 100 + "%";
+  updateMeters();
+}
+
+// ---------- レベルメーター ----------
+function readPeak(analyser) {
+  if (!meterBuf) meterBuf = new Float32Array(1024);
+  analyser.getFloatTimeDomainData(meterBuf);
+  let p = 0;
+  for (let i = 0; i < meterBuf.length; i++) {
+    const v = Math.abs(meterBuf[i]);
+    if (v > p) p = v;
+  }
+  return p;
+}
+
+function setMeter(maskEl, clipEl, peak) {
+  maskEl.style.width = (1 - clamp(peak, 0, 1)) * 100 + "%";
+  if (peak >= 0.99) {
+    clipEl.classList.add("clipping");
+    clearTimeout(clipEl._t);
+    clipEl._t = setTimeout(() => clipEl.classList.remove("clipping"), 1800);
+  }
+}
+
+function updateMeters() {
+  tracks.forEach((t) => {
+    if (!t.analyser || !t.meterMask) return;
+    setMeter(t.meterMask, t.clipEl, isPlaying ? readPeak(t.analyser) : 0);
+  });
+  const mm = $("master-meter-mask");
+  if (mm && masterAnalyser) {
+    setMeter(mm, $("master-clip"), isPlaying ? readPeak(masterAnalyser) : 0);
+  }
 }
 
 playBtn.addEventListener("click", () => (isPlaying ? pause() : play()));
@@ -1227,6 +1293,57 @@ async function runSubsep() {
   }
 }
 
+// ---------- MIDI書き出し ----------
+let midiBusy = false;
+
+function openMidiPanel() {
+  const sel = $("md-track");
+  sel.innerHTML = "";
+  tracks.forEach((t, i) => {
+    if (t.isOriginal) return;
+    const opt = document.createElement("option");
+    opt.value = i;
+    opt.textContent = t.label;
+    sel.appendChild(opt);
+  });
+  const preferred = tracks.findIndex((t) => ["piano", "guitar", "bass", "vocals"].includes(t.name));
+  if (preferred >= 0) sel.value = preferred;
+  togglePanel("panel-midi");
+}
+
+async function runMidiExport() {
+  if (midiBusy) return;
+  const track = tracks[parseInt($("md-track").value, 10)];
+  if (!track) { showError("対象トラックを選択してください"); return; }
+  midiBusy = true;
+  $("md-run").disabled = true;
+  try {
+    flashInfo(`${track.label} を採譜中... (数十秒かかることがあります)`);
+    const form = new FormData();
+    form.append("file", new Blob([encodeWav(track.chans, sampleRate)], { type: "audio/wav" }), "track.wav");
+    form.append("onset", $("md-sens").value);
+    form.append("min_note_ms", $("md-minnote").value);
+    const res = await fetch("/api/midi", { method: "POST", body: form });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || "MIDI書き出しに失敗しました (" + res.status + ")");
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${baseFilename}_${track.label}.mid`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    flashInfo(`${track.label} のMIDIをダウンロードしました`);
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    midiBusy = false;
+    $("md-run").disabled = false;
+  }
+}
+
 // ---------- セリフ書き出し (①解析 → ②一覧で調整 → ③書き出し) ----------
 let dialogueBusy = false;
 let dialogueSegments = []; // 編集可能なセグメント一覧
@@ -1496,13 +1613,19 @@ $("overview").addEventListener("mousedown", (e) => {
 });
 
 function togglePanel(id) {
-  ["panel-silence-cut", "panel-denoise", "panel-repair", "panel-dialogue", "panel-guide", "panel-subsep"].forEach((p) => {
+  ["panel-silence-cut", "panel-denoise", "panel-repair", "panel-dialogue", "panel-guide", "panel-subsep", "panel-midi"].forEach((p) => {
     if (p === id) $(p).classList.toggle("hidden");
     else $(p).classList.add("hidden");
   });
 }
 $("tool-guide").addEventListener("click", () => togglePanel("panel-guide"));
 $("ss-run").addEventListener("click", runSubsep);
+$("tool-midi").addEventListener("click", openMidiPanel);
+$("md-run").addEventListener("click", runMidiExport);
+$("md-sens").addEventListener("input", (e) => {
+  const v = parseFloat(e.target.value);
+  $("md-sens-val").textContent = v < 0.4 ? "高 (音を多く拾う)" : v > 0.6 ? "低 (確実な音のみ)" : "標準";
+});
 $("ss-kind").addEventListener("change", () => {
   $("ss-note").textContent = $("ss-kind").value === "drums"
     ? "ドラム系のトラックに使ってください。元のトラックは残ります (ミュートされます)。初回はモデルのダウンロードがあります (約170MB)"
