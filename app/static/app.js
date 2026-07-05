@@ -222,6 +222,7 @@ function makeTrack(def, bufferOrChans) {
         <input type="range" class="vol-slider" min="0" max="1.5" step="0.01" value="1" title="音量">
         <label class="exp-chk" title="「選択ステム保存」の対象に含める"><input type="checkbox" class="exp-input"${def.isOriginal ? "" : " checked"}>💾</label>
         <button class="dl-btn" title="このステムをWAV保存 (編集内容を含む)">⬇</button>
+        ${def.isOriginal ? "" : '<button class="dl-btn sub-btn" title="このトラックをさらに分離 (ドラム細分化 / リード・バックボーカル)">🔬</button>'}
         ${def.isOriginal ? "" : '<button class="dl-btn del-btn" title="トラックを削除">✕</button>'}
       </div>
     </div>
@@ -254,6 +255,8 @@ function makeTrack(def, bufferOrChans) {
   el.querySelector(".dl-btn").addEventListener("click", () => downloadTrack(track));
   const delBtn = el.querySelector(".del-btn");
   if (delBtn) delBtn.addEventListener("click", () => deleteTrack(track));
+  const subBtn = el.querySelector(".sub-btn");
+  if (subBtn) subBtn.addEventListener("click", () => openSubsepPanel(track));
 
   // ラベルのダブルクリックでリネーム
   track.labelEl = el.querySelector(".track-label");
@@ -1147,6 +1150,83 @@ async function applyRepair() {
   }
 }
 
+// ---------- トラックの追加分離 (ドラム細分化 / リード・バック) ----------
+let subsepTrack = null;
+let subsepBusy = false;
+
+function openSubsepPanel(track) {
+  subsepTrack = track;
+  $("ss-track-label").textContent = `「${track.label}」`;
+  // トラック名から種類を推定
+  if (track.name === "vocals" || track.name === "dialog" || /ボーカル|声/.test(track.label)) {
+    $("ss-kind").value = "vocals";
+  } else if (track.name === "drums" || /ドラム/.test(track.label)) {
+    $("ss-kind").value = "drums";
+  }
+  togglePanel("panel-subsep");
+}
+
+async function runSubsep() {
+  if (subsepBusy || !subsepTrack || !tracks.includes(subsepTrack)) return;
+  const src = subsepTrack;
+  const kind = $("ss-kind").value;
+  subsepBusy = true;
+  $("ss-run").disabled = true;
+  try {
+    flashInfo(`${src.label} をアップロード中...`);
+    const form = new FormData();
+    form.append("file", new Blob([encodeWav(src.chans, sampleRate)], { type: "audio/wav" }), "track.wav");
+    form.append("kind", kind);
+    const res = await fetch("/api/subseparate", { method: "POST", body: form });
+    if (!res.ok) throw new Error("分離の開始に失敗しました (" + res.status + ")");
+    const { id } = await res.json();
+
+    let job;
+    while (true) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const jr = await fetch("/api/jobs/" + id);
+      if (!jr.ok) throw new Error("ジョブ情報の取得に失敗しました");
+      job = await jr.json();
+      if (job.status === "error") throw new Error(job.message);
+      if (job.status === "done") break;
+      flashInfo(`追加分離: ${job.message || ""}`);
+    }
+
+    flashInfo("音声データを読み込み中...");
+    const buffers = await Promise.all(
+      job.stems.map(async (s) => audioCtx.decodeAudioData(await (await fetch(s.url)).arrayBuffer()))
+    );
+
+    // 元トラックの直後に新トラックを挿入し、元はミュート
+    if (isPlaying) pause();
+    let insertAt = tracks.indexOf(src) + 1;
+    job.stems.forEach((spec, i) => {
+      const track = makeTrack(
+        { name: spec.name, label: spec.label, color: spec.color, defaultMuted: false, isOriginal: false, custom: true },
+        buffers[i]
+      );
+      tracksEl.insertBefore(track.el, tracks[insertAt] ? tracks[insertAt].el : null);
+      tracks.splice(insertAt, 0, track);
+      insertAt++;
+    });
+    src.muted = true;
+    applyGains();
+    undoStack = [];
+    redoStack = [];
+    clearSelection();
+    refreshAll();
+    updateToolbar();
+    updateZipBtn();
+    togglePanel("panel-subsep");
+    flashInfo(`${src.label} を ${job.stems.length}トラックに分離しました (元トラックはミュート・取り消し履歴はリセット)`);
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    subsepBusy = false;
+    $("ss-run").disabled = false;
+  }
+}
+
 // ---------- セリフ書き出し (①解析 → ②一覧で調整 → ③書き出し) ----------
 let dialogueBusy = false;
 let dialogueSegments = []; // 編集可能なセグメント一覧
@@ -1416,12 +1496,18 @@ $("overview").addEventListener("mousedown", (e) => {
 });
 
 function togglePanel(id) {
-  ["panel-silence-cut", "panel-denoise", "panel-repair", "panel-dialogue", "panel-guide"].forEach((p) => {
+  ["panel-silence-cut", "panel-denoise", "panel-repair", "panel-dialogue", "panel-guide", "panel-subsep"].forEach((p) => {
     if (p === id) $(p).classList.toggle("hidden");
     else $(p).classList.add("hidden");
   });
 }
 $("tool-guide").addEventListener("click", () => togglePanel("panel-guide"));
+$("ss-run").addEventListener("click", runSubsep);
+$("ss-kind").addEventListener("change", () => {
+  $("ss-note").textContent = $("ss-kind").value === "drums"
+    ? "ドラム系のトラックに使ってください。元のトラックは残ります (ミュートされます)。初回はモデルのダウンロードがあります (約170MB)"
+    : "ボーカル・話し声系のトラックに使ってください。リードボーカルとバックコーラス・ハモリに分かれます。初回はモデルのダウンロードがあります (約900MB)";
+});
 document.querySelectorAll(".guide-open").forEach((b) =>
   b.addEventListener("click", () => {
     const target = b.dataset.panel;

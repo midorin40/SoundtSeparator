@@ -166,6 +166,49 @@
               <li>一覧で誤認識を修正して書き出し → clips/ と metadata.csv を学習に使用</li>
             </ol>
           </div>
+          <div class="recipe recipe-wide">
+            <div class="recipe-title">🔇 ノイズの見分け方と対処 — 波形・症状からツールとパラメータを選ぶ</div>
+            <table class="noise-table">
+              <tr><th>聴こえ方</th><th>波形での見え方</th><th>使うツール</th><th>パラメータの目安</th></tr>
+              <tr>
+                <td>「サーッ」が常に鳴る<br>(ヒスノイズ・環境ノイズ)</td>
+                <td>無音のはずの場所にも<b>薄い毛羽</b>が全体に走る</td>
+                <td>〜 ノイズ除去<br>(プロファイル型)</td>
+                <td>ノイズ<b>だけ</b>の区間を<b>0.5秒以上</b>選択して実行。まず強さ<b>90%</b>。声がこもる・水中のような音になったら<b>70%</b>に下げる</td>
+              </tr>
+              <tr>
+                <td>「ブーン」と低い唸り<br>(電源ハム)</td>
+                <td>波形ではほぼ見えない。<br>🔍ズームすると細かい規則的なうねり</td>
+                <td>🔧 修復 →<br>ハムノイズ除去</td>
+                <td>東日本=<b>50Hz</b> / 西日本=<b>60Hz</b>。効かなければもう一方を試す。適用量100%でOK</td>
+              </tr>
+              <tr>
+                <td>「プツッ」「パチッ」<br>(クリック・リップノイズ)</td>
+                <td>🔍ズーム+📈自動スケールで見ると<b>鋭い縦のトゲ</b>が1本〜数本</td>
+                <td>🔧 修復 →<br>クリック / リップノイズ除去</td>
+                <td>トゲの周辺だけを狭く選択し、まず感度<b>50%</b>。残るなら<b>70〜80%</b>。タ行・カ行の子音が消えたら感度を下げる</td>
+              </tr>
+              <tr>
+                <td>お風呂場のような響き<br>(リバーブ・反響)</td>
+                <td>発話の後に<b>尾を引く</b>ように波形が減衰する</td>
+                <td>🔧 修復 →<br>リバーブ除去 (AI)</td>
+                <td>まず適用量<b>100%</b>。声が痩せたら<b>60〜80%</b>でブレンド。TTS/RVC素材にはかけるのが基本</td>
+              </tr>
+              <tr>
+                <td>音量がバラバラ / 小さい</td>
+                <td>波形の高さが場所・トラックでまちまち</td>
+                <td>🔧 修復 →<br>ラウドネスノーマライズ</td>
+                <td>配信先のプリセットを選ぶだけ (YouTube=-14 LUFS)。素材整えなら-16〜-18が無難</td>
+              </tr>
+              <tr>
+                <td>別の音の混入<br>(BGMやSEが声に残る)</td>
+                <td>本来ないはずの音が重なって見える</td>
+                <td>✂ 編集 →<br>➜ 移動 / 🧹除去</td>
+                <td>混入部分を選択して正しいトラックへ<b>➜移動</b>。分離モード(映像/音楽)や品質を上げて再分離も有効</td>
+              </tr>
+            </table>
+            <p class="rp-note">💡 探し方のコツ: <b>S</b>(ソロ)で対象トラックだけを聴きながら、📈自動スケール+🔍ズーム(Ctrl+ホイール)で波形を確認 → 狭い範囲で試して Ctrl+Z で聴き比べ → 良ければ広い範囲に適用</p>
+          </div>
           <div class="recipe">
             <div class="recipe-title">🎵 ボーカル抜き / BGM抜き音源を作る</div>
             <ol>
@@ -177,6 +220,21 @@
           </div>
         </div>
         <div class="panel-row"><button class="btn panel-close">閉じる</button></div>
+      </div>
+      <!-- トラック追加分離パネル -->
+      <div id="panel-subsep" class="panel hidden">
+        <b>🔬 トラックをさらに分離</b> — <span id="ss-track-label"></span> を専用AIモデルで細分化し、新しいトラックとして追加します
+        <div class="panel-row">
+          <label>種類
+            <select id="ss-kind">
+              <option value="drums">ドラム細分化 (キック / スネア / タム / シンバル)</option>
+              <option value="vocals">ボーカル分離 (リード / バックコーラス)</option>
+            </select>
+          </label>
+          <button id="ss-run" class="btn btn-primary">実行</button>
+          <button class="btn panel-close">閉じる</button>
+        </div>
+        <p id="ss-note" class="rp-note">ドラム系のトラックに使ってください。元のトラックは残ります (ミュートされます)。初回はモデルのダウンロードがあります (ドラム: 約170MB / ボーカル: 約900MB)</p>
       </div>
       <!-- セリフ書き出しパネル -->
       <div id="panel-dialogue" class="panel panel-export hidden">

@@ -53,6 +53,15 @@ DEREVERB_CKPT = {
     "config_url": "https://huggingface.co/anvuew/dereverb_mel_band_roformer/resolve/main/dereverb_mel_band_roformer_anvuew.yaml",
     "type": "mel_band_roformer",
 }
+KARAOKE_CKPT = {
+    "file": "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+    "url": "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+    "config": os.path.join(MODELS_DIR, "config_mel_band_roformer_karaoke.yaml"),
+    "config_url": "https://huggingface.co/shiromiya/audio-separation-models/resolve/main/mel_band_roformer_karaoke_aufr33_viperx/config_mel_band_roformer_karaoke.yaml",
+    "type": "mel_band_roformer",
+}
+DRUMSEP_CKPT_FILE = "model_drumsep.th"
+DRUMSEP_CKPT_URL = "https://github.com/ZFTurbo/Music-Source-Separation-Training/releases/download/v1.0.5/model_drumsep.th"
 CDX23_URL = "https://github.com/ZFTurbo/MVSEP-CDX23-Cinematic-Sound-Demixing/releases/download/v.1.0.0/"
 CDX23_FILES = ["97d170e1-a778de4a.th", "97d170e1-dbb4db15.th", "97d170e1-e41a5468.th"]
 
@@ -236,6 +245,51 @@ class Engine:
             "other": out[idx["other"]] + out[idx["vocals"]],
         }
         return stems
+
+    # ------------------------------------------------------------------ トラックの追加分離
+    def subseparate(self, audio, kind, progress_cb=None):
+        """既存トラックをさらに分離する。
+        kind="drums":  kick / snare / cymbals / toms (DrumSep htdemucs)
+        kind="vocals": lead / back (MelBand Roformer Karaoke)
+        audio: (channels, samples) → dict stem名 -> (channels, samples)
+        """
+        with self._lock:
+            if kind == "drums":
+                if "drumsep" not in self._cache:
+                    path = _download(DRUMSEP_CKPT_URL, DRUMSEP_CKPT_FILE, progress_cb, "DrumSep")
+                    if progress_cb:
+                        progress_cb(0, "モデルを読み込み中 (DrumSep)...")
+                    model = _load_demucs_checkpoint(path)
+                    model.to(self.device).eval()
+                    self._cache["drumsep"] = model
+                model = self._cache["drumsep"]
+
+                def cb(frac):
+                    if progress_cb:
+                        progress_cb(int(100 * frac), f"ドラムを細分化中... ({int(100 * frac)}%)")
+
+                out = _chunked_demucs([model], audio, self.device, overlap=0.55, progress_cb=cb)
+                # DrumSep のソース名はスペイン語 (bombo=キック, redoblante=スネア, platillos=シンバル)
+                name_map = {"bombo": "kick", "redoblante": "snare", "platillos": "cymbals", "toms": "toms"}
+                return {name_map.get(name, name): out[i] for i, name in enumerate(model.sources)}
+
+            if kind == "vocals":
+                model, config = self._get_msst(KARAOKE_CKPT, progress_cb, "Karaoke Roformer")
+
+                def cb(frac):
+                    if progress_cb:
+                        progress_cb(int(100 * frac), f"リード/バックを分離中... ({int(100 * frac)}%)")
+
+                res = self._run_msst(model, config, KARAOKE_CKPT["type"], audio, cb)
+                # target: karaoke = 入力からリードボーカルを除いたもの
+                # (ボーカルステムに適用した場合 ≈ バックボーカル)
+                back = res["karaoke"][:, : audio.shape[1]]
+                if back.shape[1] < audio.shape[1]:
+                    back = np.pad(back, ((0, 0), (0, audio.shape[1] - back.shape[1])))
+                lead = audio - back
+                return {"lead": lead, "back": back}
+
+            raise ValueError(f"unknown subseparate kind: {kind}")
 
     # ------------------------------------------------------------------ リバーブ除去
     def dereverb(self, audio, progress_cb=None):

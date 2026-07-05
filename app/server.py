@@ -43,7 +43,23 @@ STEM_SPECS = {
         {"name": "other", "label": "その他", "color": "#a78bfa"},
     ],
 }
-ALLOWED_AUDIO = {f"{s['name']}.wav" for specs in STEM_SPECS.values() for s in specs} | {"original.wav"}
+SUBSEP_SPECS = {
+    "drums": [
+        {"name": "kick", "label": "キック", "color": "#ef4444"},
+        {"name": "snare", "label": "スネア", "color": "#fb923c"},
+        {"name": "toms", "label": "タム", "color": "#eab308"},
+        {"name": "cymbals", "label": "シンバル", "color": "#a3e635"},
+    ],
+    "vocals": [
+        {"name": "lead", "label": "リードVo", "color": "#f472b6"},
+        {"name": "back", "label": "バックVo", "color": "#c084fc"},
+    ],
+}
+ALLOWED_AUDIO = (
+    {f"{s['name']}.wav" for specs in STEM_SPECS.values() for s in specs}
+    | {f"{s['name']}.wav" for specs in SUBSEP_SPECS.values() for s in specs}
+    | {"original.wav"}
+)
 
 app = FastAPI(title="Sound Separator")
 
@@ -150,7 +166,7 @@ def get_job(job_id: str):
         if job is None:
             raise HTTPException(404, "job not found")
         job = dict(job)
-    if job["status"] == "done" and job.get("kind") != "dialogue":
+    if job["status"] == "done" and job.get("kind") not in ("dialogue", "subsep"):
         job["stems"] = [
             {**spec, "url": f"/api/jobs/{job_id}/audio/{spec['name']}.wav"}
             for spec in STEM_SPECS[job["mode"]]
@@ -186,6 +202,54 @@ def download_zip(job_id: str):
                 if os.path.isfile(src):
                     zf.write(src, f"{base}_{spec['label']}.wav")
     return FileResponse(zip_path, media_type="application/zip", filename="stems.zip")
+
+
+def process_subsep_job(job_id: str, wav_path: str, kind: str):
+    job_dir = os.path.join(OUTPUT_DIR, job_id)
+    try:
+        audio, sr = sf.read(wav_path, dtype="float32", always_2d=True)
+        if audio.shape[1] == 1:  # モノラルはステレオ化 (分離モデルはステレオ前提)
+            audio = np.repeat(audio, 2, axis=1)
+
+        def cb(pct, msg):
+            set_job(job_id, progress=pct, message=msg)
+
+        stems = engine.subseparate(audio.T, kind, progress_cb=cb)
+
+        set_job(job_id, progress=100, message="ファイルを書き出し中...")
+        out = []
+        for spec in SUBSEP_SPECS[kind]:
+            data = np.clip(stems[spec["name"]].T, -1.0, 1.0)
+            sf.write(os.path.join(job_dir, f"{spec['name']}.wav"), data, sr, subtype="PCM_16")
+            out.append({**spec, "url": f"/api/jobs/{job_id}/audio/{spec['name']}.wav"})
+        set_job(job_id, status="done", message="完了", stems=out)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        set_job(job_id, status="error", message=str(e))
+
+
+@app.post("/api/subseparate")
+async def subseparate_api(file: UploadFile = File(...), kind: str = Form(...)):
+    if kind not in SUBSEP_SPECS:
+        raise HTTPException(400, "invalid kind")
+    job_id = uuid.uuid4().hex[:12]
+    job_dir = os.path.join(OUTPUT_DIR, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    wav_path = os.path.join(job_dir, "subsep_input.wav")
+    with open(wav_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    with jobs_lock:
+        jobs[job_id] = {
+            "id": job_id,
+            "kind": "subsep",
+            "status": "processing",
+            "progress": 0,
+            "message": "準備中...",
+            "created": time.time(),
+        }
+    threading.Thread(target=process_subsep_job, args=(job_id, wav_path, kind), daemon=True).start()
+    return {"id": job_id}
 
 
 def process_dialogue_job(job_id: str, wav_path: str, opts: dict):

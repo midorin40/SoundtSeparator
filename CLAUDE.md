@@ -22,6 +22,7 @@ run.bat → .venv\Scripts\python.exe app\server.py → http://127.0.0.1:8765
 - DME(話し声/効果音/BGM): BandIt Plus。high品質時は CDX23 Demucs4×3 と 0.6/0.4 アンサンブル
 - 音楽6ステム: BS-Roformer(ボーカル) → htdemucs_6s(残り)。残留ボーカルは other に合算し完全再構成を維持
 - リバーブ除去: anvuew MelBand Roformer (target: noreverb)
+- 追加分離(subseparate): drums=DrumSep htdemucs (ソース名はスペイン語→英語にマップ) / vocals=Karaoke MelBand Roformer (target: karaoke=バック側, lead=引き算)
 
 ### フロントエンドの編集モデル (app.js)
 
