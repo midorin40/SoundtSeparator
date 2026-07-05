@@ -1,6 +1,6 @@
 ---
 name: add-repair-effect
-description: SoundtSeparator に新しい修復エフェクト・音声処理 (RX風機能) を追加する手順。範囲選択→処理→クロスフェード書き戻しのパターンに沿って、DSP実装からUIまでを一貫して組み込む。
+description: SoundtSeparator に新しい修復エフェクト・音声処理を追加する手順。範囲選択→処理→クロスフェード書き戻しのパターンに沿って、DSP実装からUIまでを一貫して組み込む。
 ---
 
 # 修復エフェクト追加手順

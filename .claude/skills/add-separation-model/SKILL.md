@@ -8,7 +8,7 @@ description: SoundtSeparator の分離モデルを追加・差し替える手順
 ## モデルの探し方
 
 1. `engine/msst/docs/pretrained_models.md` — MSST公式の学習済みモデル一覧 (config URL + weights URL が表になっている)
-2. MVSEP や UVR コミュニティの新モデルも、MSST対応形式 (config yaml + ckpt) なら使える
+2. コミュニティ公開の新モデルも、MSST対応形式 (config yaml + ckpt) なら使える
 3. モデルタイプは `engine/msst/utils/settings.py` の `get_model_from_config` にある分岐が対応一覧 (bandit, bandit_v2, bs_roformer, mel_band_roformer, htdemucs, mdx23c, scnet ...)
 
 ## 登録手順 (separator.py)
