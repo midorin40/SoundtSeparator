@@ -20,6 +20,18 @@ ffmpeg -y -f lavfi -i "sine=frequency=440:duration=3" -f lavfi -i "anullsrc=dura
 クリック/ハム等の特殊ノイズは numpy で注入する (例は git 履歴 or CLAUDE.md 参照):
 クリック=ランダム位置に短いインパルス加算、ハム=50Hz正弦波を混ぜる。
 
+音声(文字起こし・話者分離)のテストは Windows 内蔵TTSで合成する:
+
+```powershell
+Add-Type -AssemblyName System.Speech
+$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$s.SetOutputToWaveFile("app\static\test.wav")
+$s.SelectVoice("Microsoft Haruka Desktop"); $s.Speak("一人目のセリフです。")
+$s.SelectVoice("Microsoft Ichiro"); $s.Speak("二人目のセリフです。")  # 話者分離テストは声を切替
+$s.Dispose()
+```
+※TTS出力はモノラル。API直叩きテスト時はサーバー側のステレオ化に依存する。
+
 ## 2. サーバー起動
 
 preview_start (name: `sound-separator`)。サーバー側コード (server.py / separator.py / repair.py) を変更したら preview_stop → preview_start で再起動が必要。静的ファイル (app/static/) は F5 リロードだけでよい。
@@ -64,6 +76,11 @@ const rms = (ti, t0, t1) => { const s = Math.floor(t0*sampleRate), e = Math.floo
 
 注意: 編集後に配列参照 (`const c = tracks[i].chans[0]`) を跨いで使わない。undo/restore は配列を差し替えるため、計測のたびに取り直す。
 
+### UIテストの注意
+
+- **プレビューパネルのタブが非表示だと requestAnimationFrame が発火せず**描画系(ズーム/メーター/ループ)のテストが失敗する。chrome-devtools MCP で new_page した前面タブでテストする
+- ブラウザは静的ファイルをキャッシュする。JS/CSS変更後は `fetch('/app.js',{cache:'reload'})` → `location.reload()` のハードリロードを挟む
+
 ## 5. 数値検証の観点
 
 - 分離: 各ステムの shape が入力と一致、成分が期待ステムに集中 (RMS比較)
@@ -71,7 +88,13 @@ const rms = (ti, t0, t1) => { const s = Math.floor(t0*sampleRate), e = Math.floo
 - フェード: 境界サンプルが中間値 (急峻な0でない) か
 - declick: `np.abs(np.diff(x,2)).max()` が大幅減、正弦波部分は無傷
 - dehum: FFTで50Hz帯パワー減・信号帯 (440Hz等) 不変
-- ZIP: 先頭4byte = PK\x03\x04、Expand-Archive で実解凍して中身確認
+- loudnorm: pyloudnorm.Meter で処理後の統合ラウドネスが目標LUFS±0.5に入ること
+- pitchshift: FFTピーク周波数が 元f0×2^(半音/12) に一致 (例 +12半音: 440→880Hz)
+- tempo: 出力長 = 元の長さ/rate
+- MIDI: pretty_midi で読み、note名とstart/endが合成メロディと一致
+- 話者分離: 声を切り替えたTTS会話で speaker が交互になること
+- ドラム細分化: kick=低域(20-120Hz)優勢 / snare=中域 / cymbals=高域(5kHz+)優勢
+- ZIP: 先頭4byte = PK\x03\x04、Expand-Archive で実解凍して中身確認 (.ssproj も同様)
 
 ## 6. 後片付け (必ず)
 

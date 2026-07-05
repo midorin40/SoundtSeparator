@@ -10,12 +10,16 @@ run.bat → .venv\Scripts\python.exe app\server.py → http://127.0.0.1:8765
 
 | ファイル | 役割 |
 |---|---|
-| [app/server.py](app/server.py) | FastAPI。ジョブ管理(メモリ内dict+ポーリング)、/api/denoise、/api/effect |
+| [app/server.py](app/server.py) | FastAPI。ジョブ管理(メモリ内dict+ポーリング)。API: /api/jobs(分離), /api/subseparate, /api/dialogue-export, /api/denoise, /api/effect, /api/midi |
 | [app/separator.py](app/separator.py) | 分離エンジン。全AIモデルの遅延ロード+キャッシュ。1ジョブずつ実行(_lock) |
 | [app/repair.py](app/repair.py) | DSP修復 (declick=微分外れ値+補間, dehum=ノッチフィルタ) |
-| [app/static/app.js](app/static/app.js) | UI全部。波形Canvas、Web Audio再生、編集(全てクライアントサイド)、WAV/ZIP書き出し |
+| [app/transcriber.py](app/transcriber.py) | Whisper文字起こし、単語タイムスタンプからのクリップ長調整(segment_words)、話者分離(assign_speakers=resemblyzer+階層クラスタリング)、セリフ書き出し(export_dialogue) |
+| [app/midi_export.py](app/midi_export.py) | basic-pitch (ONNX) によるAI採譜→MIDI |
+| [app/static/app.js](app/static/app.js) | UI全部。波形/スペクトログラムCanvas、Web Audio再生+レベルメーター、編集(全てクライアントサイド)、WAV/ZIP/.ssproj読み書き |
 | engine/msst/ | ZFTurbo MSST フレームワーク(clone)。**推論用に軽量化パッチ済み(下記)** |
 | models/ | チェックポイント自動DL先 |
+
+**重要: FastAPIの重い処理は `async def` でなく `def` にする** (asyncで同期処理するとイベントループ全体が固まり全リクエストがブロックされる。/api/denoise・/api/effect・/api/midi は sync def)。
 
 ### 使用モデル (separator.py の *_CKPT 定数)
 
@@ -31,7 +35,11 @@ run.bat → .venv\Scripts\python.exe app\server.py → http://127.0.0.1:8765
 - 貼り付け・移動は常に「元と同じ時間位置」へミックス加算 (タイミングを守るのが仕様)
 - 全編集境界に FADE_SAMPLES(10ms) のフェード必須 — クリックノイズ防止。新しい編集操作を作るときも必ず入れる
 - Undo はチャンネルデータ全コピー8段。**トラック追加/削除時は undoStack/redoStack をクリアする**(スナップショットがトラック数前提のため)
-- サーバー処理系(denoise/effect)は「選択範囲+前後1.5sコンテキスト」をWAVで送り、返ってきた同尺の音声から選択範囲だけをクロスフェードで書き戻す
+- サーバー処理系(denoise/effect)は「選択範囲+前後1.5sコンテキスト」をWAVで送り、返ってきた同尺の音声から選択範囲だけをクロスフェードで書き戻す。トラック全体系(loudnorm/pitchshift/tempo)は全体を送って差し替え。tempoのみ全トラック連動(尺が変わるため)
+- 表示: viewStart/viewDur でズーム状態を持ち、描画は track.baseCanvas(オフスクリーン)に一度描いて再生時は明暗2層で合成。スペクトログラムは自前radix-2 FFT+対数周波数軸
+- 音量は volumeDb (dB) が正、track.volume はその線形換算。メーターは gainNode→AnalyserNode のタップ+masterGain 集約
+- プロジェクト保存(.ssproj)= project.json+track_N.wav の無圧縮ZIP。makeZip/parseZip (自作・store方式のみ対応)
+- **非表示タブでは rAF が発火しない** — 初期描画は drawTrack 冒頭の baseCanvas ガードで保険。テストは前面タブで行う
 
 ## 環境の注意点 (ハマりどころ)
 
@@ -44,6 +52,9 @@ run.bat → .venv\Scripts\python.exe app\server.py → http://127.0.0.1:8765
   - `engine/msst/models/bandit/core/__init__.py` → 空 (asteroid/pytorch_lightning回避)
   - `engine/msst/models/bandit/core/model/bsrnn/wrapper.py` → LightningModule を nn.Module に
 - MSST demix の進捗は `utils.model_utils.tqdm` のモンキーパッチ (separator.py `_CallbackPbar`) で取得
+- torch非依存を装う要注意パッケージの実績: openai-whisper / basic-pitch / resemblyzer は `--no-deps` で入れ、純Python依存(tiktoken, more-itertools, pretty_midi, resampy, onnxruntime, mir_eval, webrtcvad-wheels)を手動追加。webrtcvad は本家でなく **webrtcvad-wheels** を使う (py3.11 wheelがあるのはこちら)
+- **git push が固まったら**: GCMトークン失効で認証ダイアログ待ち。`Start-Process cmd '/c git push'` で対話ウィンドウを出してユーザーにサインインしてもらう。リモート確認は git fetch でなく GitHub API (認証不要)
+- jarredou/models リポジトリは消滅済み (MSST docs内のDrumSep mdx23cリンクは404)。DrumSepはhtdemucs版(ZFTurbo release v1.0.5)、karaoke configはHF shiromiya/audio-separation-models を使用
 
 ## テスト方法
 
