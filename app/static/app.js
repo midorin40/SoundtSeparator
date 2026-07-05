@@ -34,6 +34,51 @@ const FADE_SAMPLES = 441; // 編集境界のクリックノイズ防止フェー
 
 const duration = () => lengthSamples / sampleRate;
 
+// 表示ズーム状態
+let viewStart = 0; // 表示開始 (秒)
+let viewDur = null; // 表示幅 (秒)。null = 全体表示
+const getViewDur = () => (viewDur === null ? duration() : viewDur);
+
+function setView(start, dur) {
+  const d = duration();
+  dur = clamp(dur, 0.02, d);
+  if (dur >= d - 1e-6) {
+    viewStart = 0;
+    viewDur = null;
+  } else {
+    viewStart = clamp(start, 0, d - dur);
+    viewDur = dur;
+  }
+  requestViewRefresh();
+}
+
+function zoomAt(factor, centerT) {
+  const vd = getViewDur();
+  const nd = vd * factor;
+  setView(centerT - (centerT - viewStart) * (nd / vd), nd);
+}
+
+let viewRefreshPending = false;
+function requestViewRefresh() {
+  if (viewRefreshPending) return;
+  viewRefreshPending = true;
+  requestAnimationFrame(() => {
+    viewRefreshPending = false;
+    tracks.forEach((t) => layoutTrackCanvas(t));
+    renderSelection();
+    updateOverview();
+    render();
+  });
+}
+
+function updateOverview() {
+  const ov = $("overview-window");
+  if (!ov) return;
+  ov.style.left = (viewStart / duration()) * 100 + "%";
+  ov.style.width = (getViewDur() / duration()) * 100 + "%";
+  $("overview").classList.toggle("zoomed", viewDur !== null);
+}
+
 // ============================================================
 // アップロード
 // ============================================================
@@ -303,13 +348,18 @@ function deleteTrack(track) {
 // 波形描画
 // ============================================================
 function computePeaks(track, width) {
+  // 表示範囲 (viewStart〜viewStart+getViewDur) のピークを計算
   const chans = track.chans;
-  const spp = lengthSamples / width;
+  const startSample = viewStart * sampleRate;
+  const spp = (getViewDur() * sampleRate) / width;
   const peaks = new Float32Array(width * 2);
   for (let x = 0; x < width; x++) {
-    let min = 0, max = 0;
-    const s0 = Math.floor(x * spp);
-    const s1 = Math.min(Math.floor((x + 1) * spp), lengthSamples);
+    let min = Infinity, max = -Infinity;
+    let s0 = Math.floor(startSample + x * spp);
+    let s1 = Math.floor(startSample + (x + 1) * spp);
+    if (s1 <= s0) s1 = s0 + 1; // 高倍率時: 最低1サンプル
+    s0 = Math.max(0, Math.min(s0, lengthSamples - 1));
+    s1 = Math.min(s1, lengthSamples);
     const step = Math.max(1, Math.floor((s1 - s0) / 200));
     for (const ch of chans) {
       for (let s = s0; s < s1; s += step) {
@@ -318,6 +368,7 @@ function computePeaks(track, width) {
         if (v > max) max = v;
       }
     }
+    if (!isFinite(min)) { min = 0; max = 0; }
     peaks[x * 2] = min;
     peaks[x * 2 + 1] = max;
   }
@@ -341,12 +392,27 @@ function layoutTrackCanvas(track) {
   grad.addColorStop(0, track.color);
   grad.addColorStop(0.5, shade(track.color, 1.25));
   grad.addColorStop(1, track.color);
-  ctx.fillStyle = grad;
-  for (let x = 0; x < off.width; x++) {
-    const min = peaks[x * 2], max = peaks[x * 2 + 1];
-    const y0 = mid + min * mid * 0.92;
-    const y1 = mid + max * mid * 0.92;
-    ctx.fillRect(x, Math.min(y0, y1), 1, Math.max(1, Math.abs(y1 - y0)));
+  const spp = (getViewDur() * sampleRate) / off.width;
+  if (spp < 3) {
+    // 高倍率: サンプル値を折れ線で描く (波形の形が正確に見える)
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = Math.max(1.2, off.height / 70);
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    for (let x = 0; x < off.width; x++) {
+      const y = mid + ((peaks[x * 2] + peaks[x * 2 + 1]) / 2) * mid * 0.92;
+      if (x === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = grad;
+    for (let x = 0; x < off.width; x++) {
+      const min = peaks[x * 2], max = peaks[x * 2 + 1];
+      const y0 = mid + min * mid * 0.92;
+      const y1 = mid + max * mid * 0.92;
+      ctx.fillRect(x, Math.min(y0, y1), 1, Math.max(1, Math.abs(y1 - y0)));
+    }
   }
   ctx.fillStyle = "rgba(255,255,255,0.10)";
   ctx.fillRect(0, mid - 0.5, off.width, 1);
@@ -365,7 +431,9 @@ function drawTrack(track, timeSec) {
   const ctx = track.canvas.getContext("2d");
   const W = track.canvas.width, H = track.canvas.height;
   ctx.clearRect(0, 0, W, H);
-  const playedX = Math.round((timeSec / duration()) * W);
+  const vd = getViewDur();
+  const frac = (timeSec - viewStart) / vd;
+  const playedX = clamp(Math.round(frac * W), 0, W);
   ctx.globalAlpha = 0.38;
   ctx.drawImage(track.baseCanvas, 0, 0);
   if (playedX > 0) {
@@ -373,13 +441,24 @@ function drawTrack(track, timeSec) {
     ctx.drawImage(track.baseCanvas, 0, 0, playedX, H, 0, 0, playedX, H);
   }
   ctx.globalAlpha = 1;
-  track.playheadEl.style.left = (timeSec / duration()) * 100 + "%";
+  if (frac >= 0 && frac <= 1) {
+    track.playheadEl.style.display = "";
+    track.playheadEl.style.left = frac * 100 + "%";
+  } else {
+    track.playheadEl.style.display = "none";
+  }
 }
 
 function refreshAll() {
+  // 編集で尺が変わった場合に表示範囲を補正
+  if (viewDur !== null) {
+    if (viewDur >= duration() - 1e-6) { viewStart = 0; viewDur = null; }
+    else viewStart = clamp(viewStart, 0, duration() - viewDur);
+  }
   tracks.forEach((t) => layoutTrackCanvas(t));
   $("time-total").textContent = fmtTime(duration());
   renderSelection();
+  updateOverview();
   render();
 }
 
@@ -478,7 +557,13 @@ function tick() {
 function render() {
   const t = currentTime();
   $("time-current").textContent = fmtTime(t);
+  // 再生追従: ズーム中に再生位置が画面外へ出たらページ送り
+  if (isPlaying && viewDur !== null && (t > viewStart + viewDur || t < viewStart)) {
+    setView(t - viewDur * 0.08, viewDur);
+  }
   tracks.forEach((tr) => drawTrack(tr, t));
+  const op = $("overview-playhead");
+  if (op) op.style.left = (t / duration()) * 100 + "%";
 }
 
 playBtn.addEventListener("click", () => (isPlaying ? pause() : play()));
@@ -488,17 +573,20 @@ $("new-btn").addEventListener("click", () => location.reload());
 // 範囲選択
 // ============================================================
 function attachSelectionHandlers(track) {
+  const xToTime = (clientX, rect) =>
+    viewStart + ((clientX - rect.left) / rect.width) * getViewDur();
+
   track.waveEl.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return;
     e.preventDefault();
     const rect = track.waveEl.getBoundingClientRect();
-    const t0 = ((e.clientX - rect.left) / rect.width) * duration();
+    const t0 = xToTime(e.clientX, rect);
     let moved = false;
 
     setActiveTrack(tracks.indexOf(track));
 
     const onMove = (ev) => {
-      const t1 = clamp(((ev.clientX - rect.left) / rect.width) * duration(), 0, duration());
+      const t1 = clamp(xToTime(ev.clientX, rect), 0, duration());
       if (Math.abs(ev.clientX - e.clientX) > 4) moved = true;
       if (moved) {
         selection = { start: Math.min(t0, t1), end: Math.max(t0, t1) };
@@ -519,6 +607,19 @@ function attachSelectionHandlers(track) {
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   });
+
+  // Ctrl+ホイール = カーソル位置を中心にズーム / ホイール = 横スクロール (ズーム中のみ)
+  track.waveEl.addEventListener("wheel", (e) => {
+    const rect = track.waveEl.getBoundingClientRect();
+    if (e.ctrlKey) {
+      e.preventDefault();
+      zoomAt(e.deltaY > 0 ? 1.35 : 1 / 1.35, xToTime(e.clientX, rect));
+    } else if (viewDur !== null) {
+      e.preventDefault();
+      const delta = (e.deltaY || e.deltaX) > 0 ? 1 : -1;
+      setView(viewStart + delta * getViewDur() * 0.15, getViewDur());
+    }
+  }, { passive: false });
 }
 
 function setActiveTrack(idx) {
@@ -529,11 +630,16 @@ function setActiveTrack(idx) {
 }
 
 function renderSelection() {
+  const vd = getViewDur();
   tracks.forEach((t) => {
     if (!selection) { t.selectionEl.classList.add("hidden"); return; }
+    const l = ((selection.start - viewStart) / vd) * 100;
+    const r = ((selection.end - viewStart) / vd) * 100;
+    if (r <= 0 || l >= 100) { t.selectionEl.classList.add("hidden"); return; }
     t.selectionEl.classList.remove("hidden");
-    t.selectionEl.style.left = (selection.start / duration()) * 100 + "%";
-    t.selectionEl.style.width = ((selection.end - selection.start) / duration()) * 100 + "%";
+    const cl = clamp(l, 0, 100);
+    t.selectionEl.style.left = cl + "%";
+    t.selectionEl.style.width = (clamp(r, 0, 100) - cl) + "%";
   });
   const info = $("selection-info");
   if (selection) {
@@ -1036,6 +1142,7 @@ function updateToolbar() {
   $("tool-addtrack").disabled = editorBusy;
   $("tool-undo").disabled = !undoStack.length || editorBusy;
   $("tool-redo").disabled = !redoStack.length || editorBusy;
+  $("tool-zoom-sel").disabled = !hasSel;
   updateMoveSelect();
 }
 
@@ -1065,6 +1172,44 @@ $("tool-move").addEventListener("change", (e) => {
   const idx = parseInt(e.target.value, 10);
   e.target.value = "";
   if (!isNaN(idx)) doMove(idx);
+});
+
+// ---------- ズーム ----------
+function zoomToSelection() {
+  if (!selection || selection.end - selection.start < 0.001) return;
+  const len = selection.end - selection.start;
+  setView(selection.start - len * 0.15, len * 1.3);
+}
+
+$("tool-zoom-in").addEventListener("click", () => zoomAt(1 / 1.6, viewCenterT()));
+$("tool-zoom-out").addEventListener("click", () => zoomAt(1.6, viewCenterT()));
+$("tool-zoom-sel").addEventListener("click", zoomToSelection);
+$("tool-zoom-full").addEventListener("click", () => setView(0, duration()));
+
+function viewCenterT() {
+  // 再生位置が画面内ならそこを、外なら表示中央を基準にズーム
+  const t = currentTime();
+  if (t >= viewStart && t <= viewStart + getViewDur()) return t;
+  return viewStart + getViewDur() / 2;
+}
+
+// 全体ミニマップ: クリック/ドラッグで表示位置を移動
+$("overview").addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  const rect = $("overview").getBoundingClientRect();
+  const pan = (clientX) => {
+    const t = ((clientX - rect.left) / rect.width) * duration();
+    if (viewDur === null) seek(clamp(t, 0, duration()));
+    else setView(t - viewDur / 2, viewDur);
+  };
+  pan(e.clientX);
+  const onMove = (ev) => pan(ev.clientX);
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+  };
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
 });
 
 function togglePanel(id) {
@@ -1146,6 +1291,14 @@ document.addEventListener("keydown", (e) => {
   } else if (e.code === "Escape") {
     clearSelection();
     document.querySelectorAll(".panel").forEach((p) => p.classList.add("hidden"));
+  } else if (e.key === "+" || e.key === "=") {
+    e.preventDefault(); zoomAt(1 / 1.6, viewCenterT());
+  } else if (e.key === "-") {
+    e.preventDefault(); zoomAt(1.6, viewCenterT());
+  } else if (e.key === "0") {
+    e.preventDefault(); setView(0, duration());
+  } else if (e.key === "z" && !e.ctrlKey) {
+    e.preventDefault(); zoomToSelection();
   }
 });
 

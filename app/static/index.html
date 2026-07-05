@@ -116,6 +116,12 @@
           <button id="tool-undo" class="tool-btn" title="元に戻す (Ctrl+Z)">↶</button>
           <button id="tool-redo" class="tool-btn" title="やり直し (Ctrl+Y)">↷</button>
         </div>
+        <div class="tool-group">
+          <button id="tool-zoom-out" class="tool-btn" title="縮小 (-)  ／ 波形上で Ctrl+ホイールでもズームできます">🔍−</button>
+          <button id="tool-zoom-in" class="tool-btn" title="拡大 (+) ／ 波形上で Ctrl+ホイールでもズームできます">🔍＋</button>
+          <button id="tool-zoom-sel" class="tool-btn" title="選択範囲へズーム (Z)">🔍選択</button>
+          <button id="tool-zoom-full" class="tool-btn" title="全体表示 (0)">全体</button>
+        </div>
         <span id="selection-info" class="selection-info"></span>
       </div>
       <!-- 無音カット設定パネル -->
@@ -185,9 +191,14 @@
         </div>
       </div>
     </div>
+    <div id="overview" title="全体ビュー — クリック/ドラッグで表示位置を移動">
+      <div id="overview-window"></div>
+      <div id="overview-playhead"></div>
+    </div>
     <div id="tracks"></div>
     <p class="hint">
       ドラッグで範囲選択（ドラッグしたトラックが編集対象） ／ クリックでシーク＋対象切替 ／ <b>M</b>=ミュート <b>S</b>=ソロ ／ Space=再生 Ctrl+Z=取り消し<br>
+      🔍 <b>Ctrl+ホイール</b>=カーソル位置へズーム ／ ホイール=横スクロール ／ <b>Z</b>=選択範囲へズーム <b>+/−</b>=拡大縮小 <b>0</b>=全体 ／ 上の細いバーで全体位置を移動<br>
       💡 分類ミスの修正: 間違ったステムの音を範囲選択 →「➜ 移動先…」で正しいトラックへ（同じ時間位置のまま移動します）
     </p>
   </section>

@@ -235,6 +235,34 @@ main { max-width: 1060px; margin: 26px auto 40px; padding: 0 20px; }
 }
 .panel-row input[type="range"] { accent-color: var(--accent); }
 
+/* ---- overview (全体ミニマップ) ---- */
+#overview {
+  position: relative;
+  height: 16px;
+  margin: 2px 0 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--card-border);
+  cursor: pointer;
+  overflow: hidden;
+}
+#overview-window {
+  position: absolute; top: 0; bottom: 0;
+  left: 0; width: 100%;
+  background: rgba(99, 102, 241, 0.25);
+  border: 1px solid rgba(129, 140, 248, 0.7);
+  border-radius: 8px;
+  box-sizing: border-box;
+  transition: background 0.15s;
+}
+#overview:not(.zoomed) #overview-window { background: transparent; border-color: transparent; }
+#overview.zoomed:hover #overview-window { background: rgba(99, 102, 241, 0.4); }
+#overview-playhead {
+  position: absolute; top: 0; bottom: 0; width: 1.5px;
+  background: rgba(255, 255, 255, 0.8);
+  pointer-events: none;
+}
+
 /* ---- tracks ---- */
 .track {
   display: grid;
