@@ -31,6 +31,7 @@ let redoStack = [];
 const UNDO_LIMIT = 8;
 let editorBusy = false;
 const FADE_SAMPLES = 441; // 編集境界のクリックノイズ防止フェード (10ms @44.1kHz)
+let autoScale = localStorage.getItem("ssAutoScale") !== "0"; // 波形表示の自動スケール
 
 const duration = () => lengthSamples / sampleRate;
 
@@ -173,6 +174,7 @@ async function showResult(job, filename) {
   $("result-filename").textContent = filename;
   $("time-total").textContent = fmtTime(duration());
   $("time-current").textContent = fmtTime(0);
+  if (!localStorage.getItem("ssGuideDismissed")) $("guide-card").classList.remove("hidden");
   updateToolbar();
   updateZipBtn();
 
@@ -211,7 +213,8 @@ function makeTrack(def, bufferOrChans) {
     <div class="track-side">
       <div class="track-title">
         <span class="track-dot" style="color:${def.color};background:${def.color}"></span>
-        <span>${def.label}</span>
+        <span class="track-label">${def.label}</span>
+        <span class="gain-badge" title="波形表示の拡大倍率 (音量は変わりません)"></span>
       </div>
       <div class="track-controls">
         <button class="ms-btn btn-m" title="ミュート">M</button>
@@ -253,7 +256,8 @@ function makeTrack(def, bufferOrChans) {
   if (delBtn) delBtn.addEventListener("click", () => deleteTrack(track));
 
   // ラベルのダブルクリックでリネーム
-  track.labelEl = el.querySelector(".track-title span:last-child");
+  track.labelEl = el.querySelector(".track-label");
+  track.gainBadgeEl = el.querySelector(".gain-badge");
   track.labelEl.title = "ダブルクリックで名前を変更";
   track.labelEl.addEventListener("dblclick", () => renameTrack(track));
 
@@ -392,6 +396,13 @@ function layoutTrackCanvas(track) {
   grad.addColorStop(0, track.color);
   grad.addColorStop(0.5, shade(track.color, 1.25));
   grad.addColorStop(1, track.color);
+  if (track.displayGain == null) track.displayGain = computeDisplayGain(track);
+  const gain = autoScale ? track.displayGain : 1;
+  if (track.gainBadgeEl) {
+    track.gainBadgeEl.textContent = gain > 1.05 ? `表示×${gain < 10 ? gain.toFixed(1) : Math.round(gain)}` : "";
+  }
+  const amp = (v) => clamp(v * gain, -1, 1) * mid * 0.92;
+
   const spp = (getViewDur() * sampleRate) / off.width;
   if (spp < 3) {
     // 高倍率: サンプル値を折れ線で描く (波形の形が正確に見える)
@@ -400,7 +411,7 @@ function layoutTrackCanvas(track) {
     ctx.lineJoin = "round";
     ctx.beginPath();
     for (let x = 0; x < off.width; x++) {
-      const y = mid + ((peaks[x * 2] + peaks[x * 2 + 1]) / 2) * mid * 0.92;
+      const y = mid + amp((peaks[x * 2] + peaks[x * 2 + 1]) / 2);
       if (x === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
@@ -408,9 +419,8 @@ function layoutTrackCanvas(track) {
   } else {
     ctx.fillStyle = grad;
     for (let x = 0; x < off.width; x++) {
-      const min = peaks[x * 2], max = peaks[x * 2 + 1];
-      const y0 = mid + min * mid * 0.92;
-      const y1 = mid + max * mid * 0.92;
+      const y0 = mid + amp(peaks[x * 2]);
+      const y1 = mid + amp(peaks[x * 2 + 1]);
       ctx.fillRect(x, Math.min(y0, y1), 1, Math.max(1, Math.abs(y1 - y0)));
     }
   }
@@ -495,7 +505,20 @@ function trackBuffer(track) {
 }
 
 function invalidateBuffers() {
-  tracks.forEach((t) => { t.buffer = null; });
+  tracks.forEach((t) => { t.buffer = null; t.displayGain = null; });
+}
+
+function computeDisplayGain(track) {
+  // トラック全体のピークから表示倍率を決める (ズームしても倍率が安定するよう表示範囲ではなく全体基準)
+  let peak = 0;
+  for (const c of track.chans) {
+    for (let i = 0; i < c.length; i += 16) {
+      const v = Math.abs(c[i]);
+      if (v > peak) peak = v;
+    }
+  }
+  if (peak < 1e-4) return 1;
+  return clamp(0.95 / peak, 1, 30);
 }
 
 function startSources(offset) {
@@ -1186,6 +1209,22 @@ $("tool-zoom-out").addEventListener("click", () => zoomAt(1.6, viewCenterT()));
 $("tool-zoom-sel").addEventListener("click", zoomToSelection);
 $("tool-zoom-full").addEventListener("click", () => setView(0, duration()));
 
+$("tool-autoscale").addEventListener("click", () => {
+  autoScale = !autoScale;
+  localStorage.setItem("ssAutoScale", autoScale ? "1" : "0");
+  $("tool-autoscale").classList.toggle("active", autoScale);
+  requestViewRefresh();
+  flashInfo(autoScale
+    ? "波形表示を自動拡大します (実際の音量は変わりません)"
+    : "波形を実際の振幅で表示します");
+});
+$("tool-autoscale").classList.toggle("active", autoScale);
+
+$("guide-close").addEventListener("click", () => {
+  $("guide-card").classList.add("hidden");
+  localStorage.setItem("ssGuideDismissed", "1");
+});
+
 function viewCenterT() {
   // 再生位置が画面内ならそこを、外なら表示中央を基準にズーム
   const t = currentTime();
@@ -1455,21 +1494,19 @@ function fmtTime(sec) {
   return `${m}:${s}`;
 }
 
-let flashTimer = null;
-function flashInfo(msg) {
-  const info = $("selection-info");
-  info.textContent = msg;
-  clearTimeout(flashTimer);
-  flashTimer = setTimeout(() => renderSelection(), 4000);
+// 操作結果・エラーは画面中央下のトーストで大きく表示する
+let toastTimer = null;
+function toast(msg, isError) {
+  const el = $("toast");
+  el.textContent = (isError ? "⚠ " : "") + msg;
+  el.classList.remove("hidden", "toast-error", "toast-info");
+  el.classList.add(isError ? "toast-error" : "toast-info");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add("hidden"), isError ? 6000 : 4500);
 }
-
-function showError(msg) {
-  errorBox.textContent = "⚠ " + msg;
-  errorBox.classList.remove("hidden");
-  clearTimeout(showError._t);
-  showError._t = setTimeout(hideError, 6000);
-}
-function hideError() { errorBox.classList.add("hidden"); }
+function flashInfo(msg) { toast(msg, false); }
+function showError(msg) { toast(msg, true); }
+function hideError() { $("toast").classList.add("hidden"); }
 function resetToUpload() {
   progressView.classList.add("hidden");
   uploadView.classList.remove("hidden");

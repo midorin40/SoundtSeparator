@@ -95,7 +95,7 @@
       </div>
       <!-- 編集ツールバー -->
       <div class="toolbar">
-        <div class="tool-group">
+        <div class="tool-group" data-label="編集 (範囲を選択してから)">
           <button id="tool-cut" class="tool-btn" title="選択したトラックから切り取る(その場は無音に)。他のトラックには影響しません (Ctrl+X)">✂ カット</button>
           <button id="tool-copy" class="tool-btn" title="選択したトラックの範囲をコピー (Ctrl+C)">⧉ コピー</button>
           <button id="tool-paste" class="tool-btn" title="クリックで選んだトラックへ、元と同じ時間位置にミックス貼り付け (Ctrl+V)">⇥ 貼り付け</button>
@@ -106,21 +106,22 @@
           <button id="tool-ripple" class="tool-btn" title="選択範囲を全トラックから削除して前後を詰める・尺が縮みます (Shift+Delete)">⌦ 詰め削除</button>
           <button id="tool-deselect" class="tool-btn" title="選択解除 (Esc)">✕</button>
         </div>
-        <div class="tool-group">
+        <div class="tool-group" data-label="修復・整音">
           <button id="tool-silence-cut" class="tool-btn" title="無音区間を自動検出して削除">✁ 無音カット</button>
           <button id="tool-denoise" class="tool-btn" title="選択範囲をノイズとして学習し全体から除去">〜 ノイズ除去</button>
           <button id="tool-repair" class="tool-btn" title="選択範囲の修復・エフェクト (クリック除去 / リバーブ除去 / ハム除去 / フェード / ノーマライズ)">🔧 修復</button>
         </div>
-        <div class="tool-group">
+        <div class="tool-group" data-label="トラック・履歴">
           <button id="tool-addtrack" class="tool-btn" title="無音の新規トラックを追加 (移動・貼り付け先として使えます)">＋ トラック</button>
-          <button id="tool-undo" class="tool-btn" title="元に戻す (Ctrl+Z)">↶</button>
+          <button id="tool-undo" class="tool-btn" title="元に戻す (Ctrl+Z)">↶ 戻す</button>
           <button id="tool-redo" class="tool-btn" title="やり直し (Ctrl+Y)">↷</button>
         </div>
-        <div class="tool-group">
+        <div class="tool-group" data-label="表示">
           <button id="tool-zoom-out" class="tool-btn" title="縮小 (-)  ／ 波形上で Ctrl+ホイールでもズームできます">🔍−</button>
           <button id="tool-zoom-in" class="tool-btn" title="拡大 (+) ／ 波形上で Ctrl+ホイールでもズームできます">🔍＋</button>
           <button id="tool-zoom-sel" class="tool-btn" title="選択範囲へズーム (Z)">🔍選択</button>
           <button id="tool-zoom-full" class="tool-btn" title="全体表示 (0)">全体</button>
+          <button id="tool-autoscale" class="tool-btn" title="小さい音のトラックも波形が見えるよう表示だけ拡大します (実際の音量は変わりません)">📈 自動スケール</button>
         </div>
         <span id="selection-info" class="selection-info"></span>
       </div>
@@ -191,6 +192,15 @@
         </div>
       </div>
     </div>
+    <div id="guide-card" class="card guide-card hidden">
+      <b>💡 はじめての方へ — 基本の流れ</b>
+      <ol>
+        <li>波形を<b>横にドラッグ</b>して範囲を選択します（ドラッグしたトラックが編集対象になります）</li>
+        <li>ツールバーで <b>✂ カット</b>・<b>➜ 移動</b>・<b>🧹 除去</b>・<b>🔧 修復</b> など。間違えても <b>Ctrl+Z</b> で戻せます</li>
+        <li>各トラックの <b>💾</b> にチェックを付けて「<b>⬇ 選択ステム保存</b>」でダウンロード</li>
+      </ol>
+      <button id="guide-close" class="btn btn-primary">わかりました</button>
+    </div>
     <div id="overview" title="全体ビュー — クリック/ドラッグで表示位置を移動">
       <div id="overview-window"></div>
       <div id="overview-playhead"></div>
@@ -205,6 +215,8 @@
 
   <p id="error-box" class="error hidden"></p>
 </main>
+
+<div id="toast" class="toast hidden"></div>
 
 <footer>ローカル処理 — ファイルは外部に送信されません ／ Models: BandIt Plus・BS-Roformer・Demucs</footer>
 
