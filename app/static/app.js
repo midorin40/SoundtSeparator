@@ -93,9 +93,85 @@ function handleFile(f) {
   else startJob(f);
 }
 
+function handleFiles(fileList) {
+  const files = [...fileList];
+  if (files.length === 1) return handleFile(files[0]);
+  const media = files.filter((f) => !f.name.toLowerCase().endsWith(".ssproj"));
+  if (media.length) startBatch(media);
+}
+
+// ---------- 一括分離 (バッチ処理) ----------
+async function startBatch(files) {
+  hideError();
+  const quality = document.querySelector('input[name="quality"]:checked').value;
+  const mode = document.querySelector('input[name="mode"]:checked').value;
+  uploadView.classList.add("hidden");
+  $("batch-view").classList.remove("hidden");
+  const list = $("batch-list");
+  list.innerHTML = "";
+
+  const rows = files.map((f) => {
+    const row = document.createElement("div");
+    row.className = "batch-row";
+    row.innerHTML =
+      `<span class="batch-name"></span>` +
+      `<span class="batch-status">待機中</span>` +
+      `<div class="batch-bar"><div class="batch-fill"></div></div>` +
+      `<span class="batch-link"></span>`;
+    row.querySelector(".batch-name").textContent = f.name;
+    list.appendChild(row);
+    return row;
+  });
+
+  let ok = 0;
+  for (let i = 0; i < files.length; i++) {
+    const row = rows[i];
+    const status = row.querySelector(".batch-status");
+    const fill = row.querySelector(".batch-fill");
+    try {
+      status.textContent = "アップロード中...";
+      const form = new FormData();
+      form.append("file", files[i]);
+      form.append("mode", mode);
+      form.append("quality", quality);
+      const res = await fetch("/api/jobs", { method: "POST", body: form });
+      if (!res.ok) throw new Error("アップロード失敗 (" + res.status + ")");
+      const { id } = await res.json();
+
+      while (true) {
+        await new Promise((r) => setTimeout(r, 1200));
+        const jr = await fetch("/api/jobs/" + id);
+        if (!jr.ok) throw new Error("ジョブ取得失敗");
+        const job = await jr.json();
+        status.textContent = job.message || "";
+        fill.style.width = (job.progress || 0) + "%";
+        if (job.status === "error") throw new Error(job.message);
+        if (job.status === "done") {
+          status.textContent = "✅ 完了";
+          fill.style.width = "100%";
+          const a = document.createElement("a");
+          a.href = job.zip_url;
+          a.className = "btn";
+          a.textContent = "⬇ ZIP";
+          a.download = "";
+          row.querySelector(".batch-link").appendChild(a);
+          ok++;
+          break;
+        }
+      }
+    } catch (err) {
+      status.textContent = "⚠ " + err.message;
+      row.classList.add("batch-error");
+    }
+  }
+  flashInfo(`一括分離が完了しました (${ok}/${files.length}件成功) — 各行の⬇ZIPからダウンロードできます`);
+}
+
+$("batch-back").addEventListener("click", () => location.reload());
+
 dropzone.addEventListener("click", () => fileInput.click());
 $("browse-btn").addEventListener("click", (e) => { e.stopPropagation(); fileInput.click(); });
-fileInput.addEventListener("change", () => { if (fileInput.files.length) handleFile(fileInput.files[0]); });
+fileInput.addEventListener("change", () => { if (fileInput.files.length) handleFiles(fileInput.files); });
 
 ["dragover", "dragenter"].forEach((ev) =>
   dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add("dragover"); })
@@ -104,7 +180,7 @@ fileInput.addEventListener("change", () => { if (fileInput.files.length) handleF
   dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.remove("dragover"); })
 );
 dropzone.addEventListener("drop", (e) => {
-  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
 });
 
 async function startJob(file) {
@@ -1231,7 +1307,94 @@ const REPAIR_NOTES = {
   fadeout: "選択範囲の音量を徐々に 0 へ下げます",
   normalize: "選択範囲のピークが -1dB になるよう音量を揃えます",
   loudnorm: "トラック全体を配信プラットフォームの基準ラウドネス (LUFS) に合わせます。範囲選択は不要です (ITU-R BS.1770準拠、クリップ防止付き)",
+  pitchshift: "選択したトラック全体のピッチを半音単位で上下します (長さは変わりません)。RVC素材のキー合わせ等に。範囲選択は不要です",
+  tempo: "全トラックのテンポをまとめて変更します (ピッチは保たれ、尺が変わります)。範囲選択は不要です。取り消し履歴で戻せます",
 };
+
+async function applyWholeTrackServerEffect(track, effect, extraForm, busyMsg) {
+  // トラック全体をサーバー処理して差し替える (長さ変化も許容)
+  const form = new FormData();
+  form.append("file", new Blob([encodeWav(track.chans, sampleRate)], { type: "audio/wav" }), "track.wav");
+  form.append("effect", effect);
+  for (const [k, v] of Object.entries(extraForm)) form.append(k, v);
+  const res = await fetch("/api/effect", { method: "POST", body: form });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `${busyMsg}に失敗しました`);
+  }
+  const buf = await audioCtx.decodeAudioData(await res.arrayBuffer());
+  const chans = [];
+  for (let c = 0; c < buf.numberOfChannels; c++) chans.push(new Float32Array(buf.getChannelData(c)));
+  if (chans.length === 1) chans.push(new Float32Array(chans[0]));
+  return chans;
+}
+
+async function applyPitchShift() {
+  if (activeTrackIdx < 0) { showError("対象トラックをクリックして選択してください"); return; }
+  const steps = parseFloat($("rp-pitch").value) || 0;
+  if (steps === 0) { showError("半音数を入力してください (例: +2, -1.5)"); return; }
+  if (editorBusy) return;
+  const track = tracks[activeTrackIdx];
+  if (isPlaying) pause();
+  editorBusy = true;
+  updateToolbar();
+  pushUndo();
+  try {
+    flashInfo(`${track.label} のピッチを ${steps > 0 ? "+" : ""}${steps} 半音シフト中...`);
+    const chans = await applyWholeTrackServerEffect(track, "pitchshift", { param: steps }, "ピッチ変更");
+    // 長さは不変のはずだが念のため合わせる
+    track.chans = chans.map((c) => {
+      const out = new Float32Array(lengthSamples);
+      out.set(c.subarray(0, Math.min(c.length, lengthSamples)));
+      return out;
+    });
+    invalidateBuffers();
+    refreshAll();
+    flashInfo(`${track.label}: ピッチを ${steps > 0 ? "+" : ""}${steps} 半音変更しました`);
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    editorBusy = false;
+    updateToolbar();
+  }
+}
+
+async function applyTempo() {
+  const percent = parseFloat($("rp-tempo").value) || 100;
+  if (percent === 100) { showError("速度を100%以外にしてください"); return; }
+  if (editorBusy) return;
+  const rate = clamp(percent / 100, 0.5, 2.0);
+  if (isPlaying) pause();
+  editorBusy = true;
+  updateToolbar();
+  pushUndo();
+  try {
+    const targets = tracks;
+    const newChans = [];
+    for (let i = 0; i < targets.length; i++) {
+      flashInfo(`テンポ変更中 (${targets[i].label})... ${i + 1}/${targets.length}`);
+      newChans.push(await applyWholeTrackServerEffect(targets[i], "tempo", { param: rate }, "テンポ変更"));
+    }
+    lengthSamples = Math.max(...newChans.map((cs) => cs[0].length));
+    targets.forEach((t, i) => {
+      t.chans = newChans[i].map((c) => {
+        const out = new Float32Array(lengthSamples);
+        out.set(c.subarray(0, Math.min(c.length, lengthSamples)));
+        return out;
+      });
+    });
+    invalidateBuffers();
+    playOffset = 0;
+    clearSelection();
+    refreshAll();
+    flashInfo(`全トラックのテンポを ${percent}% に変更しました (Ctrl+Zで戻せます)`);
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    editorBusy = false;
+    updateToolbar();
+  }
+}
 
 function applyClientEffect(track, s, e, effect) {
   const n = e - s;
@@ -1297,6 +1460,8 @@ async function applyLoudnorm() {
 async function applyRepair() {
   const effect = $("rp-effect").value;
   if (effect === "loudnorm") return applyLoudnorm();
+  if (effect === "pitchshift") return applyPitchShift();
+  if (effect === "tempo") return applyTempo();
 
   const se = selSamples();
   if (!se) { showError("先に修復したい範囲をドラッグで選択してください"); return; }
@@ -1538,6 +1703,8 @@ async function pollDialogueJob(id) {
   }
 }
 
+const SPEAKER_COLORS = { "話者A": "#38bdf8", "話者B": "#f472b6", "話者C": "#a3e635", "話者D": "#fbbf24", "話者E": "#c084fc", "話者F": "#fb923c", "話者G": "#34d399", "話者H": "#f87171" };
+
 async function runDialogueAnalyze() {
   if (dialogueBusy) return;
   const trackIdx = parseInt($("dg-track").value, 10);
@@ -1554,13 +1721,15 @@ async function runDialogueAnalyze() {
       auto_adjust: $("dg-adjust").checked,
       min_len: $("dg-min").value,
       max_len: $("dg-max").value,
+      diarize: $("dg-diarize").checked,
+      num_speakers: $("dg-spknum").value,
     });
     const res = await fetch("/api/dialogue-export", { method: "POST", body: form });
     if (!res.ok) throw new Error("解析の開始に失敗しました (" + res.status + ")");
     const { id } = await res.json();
     const job = await pollDialogueJob(id);
 
-    dialogueSegments = job.segments.map((s) => ({ start: s.start, end: s.end, text: s.text }));
+    dialogueSegments = job.segments.map((s) => ({ start: s.start, end: s.end, text: s.text, speaker: s.speaker || "" }));
     dialogueTrackIdx = trackIdx;
     renderDialogueList(job.language);
     $("dg-result").classList.remove("hidden");
@@ -1585,13 +1754,18 @@ function renderDialogueList(language) {
 
   const list = $("dg-segments");
   list.innerHTML = "";
+  const hasSpeakers = dialogueSegments.some((s) => s.speaker);
   dialogueSegments.forEach((seg, i) => {
     const dur = seg.end - seg.start;
     const row = document.createElement("div");
     row.className = "dg-seg" + ($("dg-adjust").checked && (dur < minL || dur > maxL) ? " dg-warn" : "");
+    const spkHtml = hasSpeakers
+      ? `<select class="dg-spk" title="話者 (間違っていたらここで修正)">${Object.keys(SPEAKER_COLORS).map((n) => `<option value="${n}"${n === seg.speaker ? " selected" : ""}>${n}</option>`).join("")}</select>`
+      : "";
     row.innerHTML =
       `<button class="dg-play" title="この位置へジャンプ+範囲選択">▶</button>` +
       `<span class="dg-idx">${String(i + 1).padStart(3, "0")}</span>` +
+      spkHtml +
       `<input class="dg-in dg-start" type="number" step="0.05" min="0" value="${seg.start.toFixed(2)}" title="開始秒">` +
       `<span class="dg-sep">〜</span>` +
       `<input class="dg-in dg-end" type="number" step="0.05" min="0" value="${seg.end.toFixed(2)}" title="終了秒">` +
@@ -1599,6 +1773,14 @@ function renderDialogueList(language) {
       `<input class="dg-text-in" type="text" value="" title="テキスト (直接編集できます)">` +
       `<button class="dg-del" title="この行を書き出しから除外">✕</button>`;
     row.querySelector(".dg-text-in").value = seg.text;
+    const spkSel = row.querySelector(".dg-spk");
+    if (spkSel) {
+      spkSel.style.color = SPEAKER_COLORS[seg.speaker] || "#e8ecf5";
+      spkSel.addEventListener("change", (e) => {
+        seg.speaker = e.target.value;
+        spkSel.style.color = SPEAKER_COLORS[seg.speaker] || "#e8ecf5";
+      });
+    }
 
     row.querySelector(".dg-play").addEventListener("click", () => {
       selection = { start: seg.start, end: seg.end };
@@ -1815,7 +1997,12 @@ $("rp-effect").addEventListener("change", () => {
   $("rp-mix-row").classList.toggle("hidden", !["declick", "dereverb", "dehum"].includes(v));
   $("rp-platform-row").classList.toggle("hidden", v !== "loudnorm");
   $("rp-lufs-row").classList.toggle("hidden", v !== "loudnorm" || $("rp-platform").value !== "custom");
+  $("rp-pitch-row").classList.toggle("hidden", v !== "pitchshift");
+  $("rp-tempo-row").classList.toggle("hidden", v !== "tempo");
   $("rp-note").textContent = REPAIR_NOTES[v] || "";
+});
+$("dg-diarize").addEventListener("change", () => {
+  $("dg-spk-row").classList.toggle("hidden", !$("dg-diarize").checked);
 });
 $("rp-platform").addEventListener("change", () => {
   const custom = $("rp-platform").value === "custom";

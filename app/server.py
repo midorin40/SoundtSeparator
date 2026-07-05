@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from separator import SAMPLE_RATE, engine
-from transcriber import export_dialogue, segment_words, transcriber
+from transcriber import assign_speakers, export_dialogue, segment_words, transcriber
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(os.path.dirname(BASE_DIR), "output")
@@ -272,9 +272,12 @@ def process_dialogue_job(job_id: str, wav_path: str, opts: dict):
                 segments = segment_words(words, min_len=opts["min_len"], max_len=opts["max_len"])
             if not segments:
                 raise RuntimeError("セリフを検出できませんでした (対象トラックに音声が含まれているか確認してください)")
+            if opts["diarize"]:
+                segments = assign_speakers(audio, sr, segments, num_speakers=opts["num_speakers"], progress_cb=cb)
             annotated = [
                 {"index": i, "start": s["start"], "end": s["end"],
-                 "duration": round(s["end"] - s["start"], 3), "text": s["text"]}
+                 "duration": round(s["end"] - s["start"], 3),
+                 "speaker": s.get("speaker", ""), "text": s["text"]}
                 for i, s in enumerate(segments, start=1)
             ]
             set_job(job_id, status="done", progress=100, message="完了",
@@ -317,6 +320,8 @@ async def dialogue_export_api(
     auto_adjust: bool = Form(True),
     min_len: float = Form(2.0),
     max_len: float = Form(10.0),
+    diarize: bool = Form(False),
+    num_speakers: int = Form(0),
     segments: str = Form(""),
 ):
     job_id = uuid.uuid4().hex[:12]
@@ -346,7 +351,11 @@ async def dialogue_export_api(
                 st, en = float(s["start"]), float(s["end"])
                 text = str(s.get("text", "")).strip()
                 if en - st >= 0.05 and text:
-                    parsed_segments.append({"start": st, "end": en, "text": text})
+                    seg = {"start": st, "end": en, "text": text}
+                    spk = str(s.get("speaker", "")).strip()
+                    if spk:
+                        seg["speaker"] = "".join(c for c in spk if c not in '\\/:*?"<>|')[:20]
+                    parsed_segments.append(seg)
         except (ValueError, KeyError, TypeError):
             raise HTTPException(400, "セグメントデータが不正です")
 
@@ -362,6 +371,8 @@ async def dialogue_export_api(
         "auto_adjust": auto_adjust,
         "min_len": float(np.clip(min_len, 0.3, 60.0)),
         "max_len": float(np.clip(max_len, 1.0, 120.0)),
+        "diarize": diarize,
+        "num_speakers": int(np.clip(num_speakers, 0, 8)),
         "segments": parsed_segments,
     }
     threading.Thread(target=process_dialogue_job, args=(job_id, wav_path, opts), daemon=True).start()
@@ -449,6 +460,7 @@ def apply_effect(
     sensitivity: float = Form(0.5),
     base_freq: float = Form(50.0),
     target_lufs: float = Form(-14.0),
+    param: float = Form(0.0),
 ):
     """範囲修復エフェクト。クライアントは選択範囲+前後コンテキストのWAVを送り、
     処理済みの同じ長さのWAVを受け取って選択範囲だけをクロスフェードで書き戻す。
@@ -465,6 +477,26 @@ def apply_effect(
         out = dehum(audio, base_freq=base_freq, sr=sr)
     elif effect == "dereverb":
         out = engine.dereverb(audio.T).T  # (samples, ch) <-> (ch, samples)
+    elif effect == "pitchshift":
+        # トラック全体のピッチシフト (半音単位、長さ不変)
+        import librosa
+
+        steps = float(np.clip(param, -12.0, 12.0))
+        out = np.stack(
+            [librosa.effects.pitch_shift(y=audio[:, c].astype(np.float64), sr=sr, n_steps=steps)
+             for c in range(audio.shape[1])],
+            axis=1,
+        ).astype(np.float32)
+    elif effect == "tempo":
+        # テンポ変更 (長さが変わる)。rate>1で速く/短く
+        import librosa
+
+        rate = float(np.clip(param, 0.25, 4.0))
+        out = np.stack(
+            [librosa.effects.time_stretch(y=audio[:, c].astype(np.float64), rate=rate)
+             for c in range(audio.shape[1])],
+            axis=1,
+        ).astype(np.float32)
     elif effect == "loudnorm":
         # ITU-R BS.1770 準拠のラウドネス測定 → 目標LUFSへゲイン調整
         import pyloudnorm

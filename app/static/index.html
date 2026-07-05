@@ -52,10 +52,10 @@
 
     <div id="dropzone">
       <div class="dz-icon">🎵</div>
-      <p class="dz-main">ここにファイルをドロップ</p>
+      <p class="dz-main">ここにファイルをドロップ <span class="dz-multi">(複数まとめてドロップで一括分離)</span></p>
       <p class="dz-sub">または <button id="browse-btn" class="link-btn">ファイルを選択</button></p>
       <p class="dz-formats">WAV / MP3 / FLAC / M4A / MP4 / MKV など (動画は音声を抽出) ／ .ssproj (保存したプロジェクトの再開)</p>
-      <input type="file" id="file-input" accept="audio/*,video/*,.ssproj" hidden>
+      <input type="file" id="file-input" accept="audio/*,video/*,.ssproj" multiple hidden>
     </div>
 
     <div class="quality-row">
@@ -65,6 +65,15 @@
         <label><input type="radio" name="quality" value="standard" checked><span>標準</span></label>
         <label><input type="radio" name="quality" value="high"><span>高品質<small>(数倍時間)</small></span></label>
       </div>
+    </div>
+  </section>
+
+  <!-- 一括分離画面 -->
+  <section id="batch-view" class="card hidden">
+    <b>📦 一括分離</b> — 複数ファイルを順番に分離し、それぞれZIPでダウンロードできます
+    <div id="batch-list"></div>
+    <div class="panel-row">
+      <button id="batch-back" class="btn">＋ 最初の画面に戻る</button>
     </div>
   </section>
 
@@ -280,6 +289,17 @@
           <label title="文の区切り・無音を優先しつつ、1クリップがこの範囲に収まるよう自動で結合・分割します"><input type="checkbox" id="dg-adjust" checked> 長さを自動調整</label>
           <label>最小 <input type="number" id="dg-min" value="2.0" step="0.5" min="0.3" max="30"> 秒</label>
           <label>最大 <input type="number" id="dg-max" value="10.0" step="0.5" min="1" max="60"> 秒</label>
+          <label title="声の特徴からセリフごとに話者を推定し、話者別フォルダで書き出します"><input type="checkbox" id="dg-diarize"> 話者分離</label>
+          <label id="dg-spk-row" class="hidden">話者数
+            <select id="dg-spknum">
+              <option value="0">自動</option>
+              <option value="2">2人</option>
+              <option value="3">3人</option>
+              <option value="4">4人</option>
+              <option value="5">5人</option>
+              <option value="6">6人</option>
+            </select>
+          </label>
           <span class="rp-note">TTSは2〜10秒、RVCは3〜10秒程度が定番です</span>
           <button id="dg-run" class="btn btn-primary">🔎 ① 解析</button>
           <button class="btn panel-close">閉じる</button>
@@ -312,8 +332,12 @@
               <option value="fadeout">フェードアウト</option>
               <option value="normalize">ピークノーマライズ (-1dB)</option>
               <option value="loudnorm">ラウドネスノーマライズ (配信用)</option>
+              <option value="pitchshift">ピッチ変更 (トラック全体)</option>
+              <option value="tempo">テンポ変更 (全トラック連動)</option>
             </select>
           </label>
+          <label id="rp-pitch-row" class="hidden">半音 <input type="number" id="rp-pitch" value="0" step="0.5" min="-12" max="12"></label>
+          <label id="rp-tempo-row" class="hidden">速度 <input type="number" id="rp-tempo" value="100" step="5" min="50" max="200"> %</label>
           <label id="rp-platform-row" class="hidden">プラットフォーム
             <select id="rp-platform">
               <option value="-14">YouTube (-14 LUFS)</option>

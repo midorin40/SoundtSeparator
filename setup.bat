@@ -27,8 +27,8 @@ echo [3/4] 依存パッケージをインストール...
 uv pip install --python .venv demucs fastapi "uvicorn[standard]" python-multipart soundfile librosa omegaconf ml_collections beartype einops spafe noisereduce pyloudnorm || (pause & exit /b 1)
 
 echo [4/4] torch依存パッケージ (--no-deps でtorchを保護)...
-uv pip install --python .venv --no-deps rotary-embedding-torch openai-whisper basic-pitch || (pause & exit /b 1)
-uv pip install --python .venv tiktoken more-itertools pretty_midi resampy onnxruntime mir_eval || (pause & exit /b 1)
+uv pip install --python .venv --no-deps rotary-embedding-torch openai-whisper basic-pitch resemblyzer || (pause & exit /b 1)
+uv pip install --python .venv tiktoken more-itertools pretty_midi resampy onnxruntime mir_eval webrtcvad-wheels || (pause & exit /b 1)
 
 echo.
 echo セットアップ完了! run.bat で起動してください

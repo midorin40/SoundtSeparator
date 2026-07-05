@@ -441,6 +441,29 @@ main { max-width: 1060px; margin: 26px auto 40px; padding: 0 20px; }
 }
 .dg-del:hover { color: #f87171; }
 
+/* ---- バッチ処理 ---- */
+.dz-multi { color: var(--text-dim); font-size: 0.8rem; font-weight: 400; }
+#batch-list { margin-top: 14px; }
+.batch-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 0.88rem;
+}
+.batch-name { min-width: 180px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.batch-status { color: var(--text-dim); font-size: 0.8rem; min-width: 130px; }
+.batch-bar { flex: 1; height: 7px; border-radius: 4px; background: rgba(255, 255, 255, 0.07); overflow: hidden; }
+.batch-fill { height: 100%; width: 0; background: linear-gradient(90deg, var(--dialog), var(--music)); transition: width 0.4s; }
+.batch-link { min-width: 70px; }
+.batch-error .batch-status { color: #fca5a5; }
+
+/* ---- 話者セレクト ---- */
+.dg-spk {
+  padding: 2px 4px; border-radius: 6px;
+  border: 1px solid var(--card-border); background: rgba(0, 0, 0, 0.35);
+  font-family: inherit; font-size: 0.78rem; font-weight: 700;
+  flex-shrink: 0;
+}
+
 .exp-chk {
   display: flex; align-items: center; gap: 2px; cursor: pointer;
   font-size: 0.85rem; opacity: 0.55; transition: opacity 0.12s;

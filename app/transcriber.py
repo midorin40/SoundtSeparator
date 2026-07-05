@@ -88,6 +88,63 @@ class Transcriber:
 
 _SENTENCE_END = ("。", "．", ".", "!", "?", "！", "？")
 
+_voice_encoder = None
+SPEAKER_NAMES = [f"話者{c}" for c in "ABCDEFGH"]
+
+
+def assign_speakers(audio, sr, segments, num_speakers=0, progress_cb=None):
+    """各セグメントに話者ラベルを付与する (resemblyzer埋め込み + 階層クラスタリング)。
+
+    num_speakers: 0=自動判定 (距離しきい値)、2以上=指定人数
+    """
+    global _voice_encoder
+    if len(segments) < 2:
+        for s in segments:
+            s["speaker"] = SPEAKER_NAMES[0]
+        return segments
+
+    import torch
+    from resemblyzer import VoiceEncoder
+    from scipy.cluster.hierarchy import fcluster, linkage
+
+    if progress_cb:
+        progress_cb(80, "話者を分析中...")
+    if _voice_encoder is None:
+        _voice_encoder = VoiceEncoder("cuda" if torch.cuda.is_available() else "cpu")
+
+    # 16kHz モノラルへ (線形補間で十分)
+    mono = audio.mean(axis=1).astype(np.float64)
+    n16 = int(len(mono) * 16000 / sr)
+    mono16 = np.interp(
+        np.linspace(0, 1, n16), np.linspace(0, 1, len(mono)), mono
+    ).astype(np.float32)
+
+    embs = []
+    for seg in segments:
+        s = max(0, int(seg["start"] * 16000))
+        e = min(n16, int(seg["end"] * 16000))
+        clip = mono16[s:e]
+        if len(clip) < 6400:  # 0.4秒未満はパディング
+            clip = np.pad(clip, (0, 6400 - len(clip)))
+        embs.append(_voice_encoder.embed_utterance(clip))
+    embs = np.stack(embs)
+    embs /= np.linalg.norm(embs, axis=1, keepdims=True) + 1e-9
+
+    z = linkage(embs, method="average", metric="cosine")
+    if num_speakers and num_speakers >= 2:
+        labels = fcluster(z, t=min(num_speakers, len(segments)), criterion="maxclust")
+    else:
+        labels = fcluster(z, t=0.25, criterion="distance")  # コサイン距離しきい値
+
+    # 出現順に 話者A, B, ... を割り当て
+    order = {}
+    for lb in labels:
+        if lb not in order:
+            order[lb] = SPEAKER_NAMES[min(len(order), len(SPEAKER_NAMES) - 1)]
+    for seg, lb in zip(segments, labels):
+        seg["speaker"] = order[lb]
+    return segments
+
 
 def segment_words(words, min_len=2.0, max_len=10.0, gap_split=0.6):
     """単語タイムスタンプから、min_len〜max_len 秒に収まるセリフ区間を組み立てる。
@@ -194,7 +251,7 @@ def export_dialogue(audio, sr, segments, out_dir, base_name="dialogue",
     fade = int(FADE_SECONDS * sr)
 
     annotations = []
-    clip_files = []
+    has_speakers = any(seg.get("speaker") for seg in segments)
 
     if make_clips:
         os.makedirs(clips_dir, exist_ok=True)
@@ -203,7 +260,9 @@ def export_dialogue(audio, sr, segments, out_dir, base_name="dialogue",
         e = min(n_samples, int((seg["end"] + CLIP_PAD_SECONDS) * sr))
         if e - s < int(0.05 * sr):
             continue
-        fname = f"{base_name}_{i:04d}.wav"
+        speaker = seg.get("speaker") or ""
+        # 話者分離時は話者別フォルダに配置
+        rel = f"{speaker}/{base_name}_{i:04d}.wav" if speaker else f"{base_name}_{i:04d}.wav"
         if make_clips:
             clip = audio[s:e].copy()
             if mono_clips and clip.shape[1] > 1:
@@ -213,36 +272,43 @@ def export_dialogue(audio, sr, segments, out_dir, base_name="dialogue",
                 ramp = np.linspace(0, 1, f, dtype=np.float32)[:, None]
                 clip[:f] *= ramp
                 clip[-f:] *= ramp[::-1]
-            sf.write(os.path.join(clips_dir, fname), np.clip(clip, -1, 1), sr, subtype="PCM_16")
-            clip_files.append(fname)
+            dst = os.path.join(clips_dir, rel.replace("/", os.sep))
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            sf.write(dst, np.clip(clip, -1, 1), sr, subtype="PCM_16")
         annotations.append({
             "index": i,
-            "file": fname if make_clips else None,
+            "file": rel if make_clips else None,
             "start": seg["start"],
             "end": seg["end"],
             "duration": round(seg["end"] - seg["start"], 3),
+            "speaker": speaker,
             "text": seg["text"],
         })
 
     if make_srt:
         with open(os.path.join(out_dir, "subtitles.srt"), "w", encoding="utf-8-sig") as f:
             for i, seg in enumerate(segments, start=1):
-                f.write(f"{i}\n{_fmt_srt_time(seg['start'])} --> {_fmt_srt_time(seg['end'])}\n{seg['text']}\n\n")
+                prefix = f"{seg['speaker']}: " if has_speakers and seg.get("speaker") else ""
+                f.write(f"{i}\n{_fmt_srt_time(seg['start'])} --> {_fmt_srt_time(seg['end'])}\n{prefix}{seg['text']}\n\n")
 
     if make_tts:
-        # LJSpeech 形式: ファイル名(拡張子なし)|テキスト
+        # LJSpeech 形式: ファイル名(拡張子なし)|テキスト。話者分離時は話者列を追加
         with open(os.path.join(out_dir, "metadata.csv"), "w", encoding="utf-8", newline="") as f:
             for a in annotations:
                 if a["file"]:
-                    f.write(f"{os.path.splitext(a['file'])[0]}|{a['text']}\n")
+                    base = os.path.splitext(a["file"])[0]
+                    if has_speakers:
+                        f.write(f"{base}|{a['speaker']}|{a['text']}\n")
+                    else:
+                        f.write(f"{base}|{a['text']}\n")
 
     with open(os.path.join(out_dir, "annotations.json"), "w", encoding="utf-8") as f:
         json.dump(annotations, f, ensure_ascii=False, indent=2)
     with open(os.path.join(out_dir, "annotations.csv"), "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["index", "file", "start", "end", "duration", "text"])
+        w.writerow(["index", "file", "start", "end", "duration", "speaker", "text"])
         for a in annotations:
-            w.writerow([a["index"], a["file"] or "", a["start"], a["end"], a["duration"], a["text"]])
+            w.writerow([a["index"], a["file"] or "", a["start"], a["end"], a["duration"], a["speaker"], a["text"]])
 
     zip_path = os.path.join(out_dir, "dialogue_export.zip")
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
